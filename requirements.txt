@@ -1,0 +1,243 @@
+# ============================================================================
+# 级联 Pipeline（路线 A）Python 依赖清单
+# ============================================================================
+# 覆盖链路：VAD → ASR(SenseVoice) → RAG(bge+FAISS) → LLM(Qwen3-14B/vLLM) → TTS(VoxCPM)
+#
+# 【本清单的来源】
+#   全部版本用 `==` 精确锁定，取自一套**实测可跑通**的环境：
+#     Python        3.11.17            ← 推荐基线
+#     torch         2.13.0+cu130        （CUDA 13.0 轮子，Ampere/3090Ti 可用）
+#     NVIDIA 驱动   需支持 CUDA 13
+#   不是"大概能装"的清单，而是"与验证过的环境逐版本一致"的清单。
+#
+# 【Python 版本】建议用 3.11（上面这套就是 3.11 验证的）。
+#   若你坚持用 3.12/3.13：本清单 37 个包**都有 cp312/cp313 或 abi3/纯 py 轮子**
+#   （已逐个核验 PyPI），装得上；但 3.12+ 这个组合我没有端到端验证过，
+#   属于"可装但未验证"。vllm/nanovllm 这类带 CUDA 扩展的包对版本最敏感。
+#   另外注意：**不要用 conda base 环境**装这些依赖，建个独立环境更省事。
+#
+# 【安装步骤（顺序很重要）】
+#   conda create -y -n voiceagent python=3.11 && conda activate voiceagent
+#
+#   # ① 先装 torch 三件套，并指定 CUDA 轮子索引 —— 必须第一步装！
+#   #    为什么必须先装：vllm 会重新解析 torch 依赖，若此时 torch 还没装好，
+#   #    可能被换成另一个构建版本，导致 CUDA 不匹配。
+#   #    为什么带上 torchvision：vllm==0.31.0 硬依赖 torchvision==0.28.0，
+#   #    一起装才能保证三者都是 +cu130 构建。
+#   pip install torch==2.13.0 torchaudio==2.11.0 torchvision==0.28.0 \
+#       --index-url https://download.pytorch.org/whl/cu130
+#
+#   # ② 再装本清单其余部分
+#   #    此时 torch 三件套已满足，pip 不会重装它们
+#   pip install -r requirements.txt
+#
+#   # ③ 装 TTS 引擎（两步，flash-attn 要编译，见文末详细说明）
+#   #   export CUDA_HOME=/usr/local/cuda && export PATH=$CUDA_HOME/bin:$PATH
+#   #   pip install flash-attn==2.8.3.post1 --no-build-isolation
+#   #   pip install nano-vllm-voxcpm==2.0.4
+#
+#   # ④ 自检（会逐个 import 并报告缺什么）
+#   bash start_all.sh
+#   或： python -c "import torch,vllm,funasr,sentence_transformers,nest_asyncio; \
+#                   print(torch.__version__, torch.cuda.is_available())"
+#
+# 【② 的索引说明】上面 ① 用的是 --index-url（只认 pytorch 索引）。已核验该索引
+#   完整托管 torch 2.13.0 的全部依赖（filelock/sympy/networkx/jinja2/fsspec/
+#   setuptools/triton 以及 cuda-toolkit、cuda-bindings、nvidia-cudnn-cu13、
+#   nvidia-nccl-cu13 等 CUDA 包），因此不会出现"依赖找不到"。
+#   若该索引在你网络下不可达，改用 --extra-index-url（保留 PyPI 作主索引）：
+#       pip install torch==2.13.0 torchaudio==2.11.0 torchvision==0.28.0 \
+#           --extra-index-url https://download.pytorch.org/whl/cu130
+#
+# 【注意】
+#   · 本文件**不含** TTS 引擎 nanovllm_voxcpm —— 它不在 PyPI 上，
+#     必须从源码安装，见文件末尾的说明。
+#   · 可选的 LiveKit / Smart Turn / 投机ASR 等组件也未列入（未 pin 版本的包
+#     会破坏本文件"全部锁定"的性质），见文件末尾的注释块。
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# 1. 核心：PyTorch（务必按上面 ① 的带 CUDA 索引单独安装）
+# ---------------------------------------------------------------------------
+torch==2.13.0
+torchaudio==2.11.0
+numpy==2.3.5
+
+
+# ---------------------------------------------------------------------------
+# 2. LLM 推理服务（独立进程，OpenAI 兼容 API；ws_server 通过 HTTP 调它）
+# ---------------------------------------------------------------------------
+vllm==0.31.0
+
+
+# ---------------------------------------------------------------------------
+# 3. ASR：SenseVoiceSmall（FunASR 体系）
+# ---------------------------------------------------------------------------
+funasr==1.4.16
+modelscope==1.40.1
+sentencepiece==0.2.2
+kaldiio==2.18.1
+
+
+# ---------------------------------------------------------------------------
+# 4. RAG 检索（bge-small-zh-v1.5 + FAISS）
+# ---------------------------------------------------------------------------
+sentence-transformers==6.1.0
+faiss-cpu==1.15.1
+# FlagEmbedding 只在启用 reranker（bge-reranker-v2-m3）时才被 import，
+# 保留它是为了让"以后想开 reranker"不用再动环境
+FlagEmbedding==1.4.2
+
+
+# ---------------------------------------------------------------------------
+# 5. VAD / 降噪 / 判停（都跑 CPU，不占显存）
+# ---------------------------------------------------------------------------
+onnxruntime==1.30.0
+speechbrain==1.1.1
+
+
+# ---------------------------------------------------------------------------
+# 6. Web 服务（ws_server 的 FastAPI + WebSocket）
+# ---------------------------------------------------------------------------
+fastapi==0.136.3
+uvicorn==0.54.0
+websockets==17.2
+starlette==1.7.0
+pydantic==2.13.5
+# nest_asyncio 是 ws_server.py 的**模块级**导入，缺了服务连启动都不行
+nest-asyncio==1.6.0
+
+
+# ---------------------------------------------------------------------------
+# 7. LLM 客户端（engine/llm.py 走 OpenAI 兼容协议调 vLLM）
+# ---------------------------------------------------------------------------
+openai==3.26.0
+httpx==0.28.1
+
+
+# ---------------------------------------------------------------------------
+# 8. 音频 IO
+# ---------------------------------------------------------------------------
+soundfile==0.14.0
+scipy==1.17.1
+# librosa：本仓库代码没有直接 import 它，但它是 **funasr 的硬依赖**（FunASR 前端特征提取用）
+librosa==0.11.0
+
+
+# ---------------------------------------------------------------------------
+# 9. 文本处理（离线评测脚本 engine/fireredasr2/utils/wer.py 用）
+# ---------------------------------------------------------------------------
+cn2an==0.5.24
+
+
+# ---------------------------------------------------------------------------
+# 10. 关键传递依赖（显式锁定，避免上游悄悄升级导致行为漂移）
+#     这些不是本仓库直接 import 的，但会影响推理结果、或属于硬性约束
+# ---------------------------------------------------------------------------
+transformers==5.17.0
+tokenizers==0.23.2
+accelerate==1.15.0
+huggingface_hub==1.33.0
+safetensors==0.8.0
+# torchvision：本仓库代码不 import，但 **vllm==0.31.0 硬依赖 torchvision==0.28.0**
+torchvision==0.28.0
+einops==0.8.2
+PyYAML==6.0.3
+requests==2.34.2
+tqdm==4.70.1
+packaging==26.3
+typing_extensions==4.16.0
+
+
+# ---------------------------------------------------------------------------
+# 11. 本文件**没有**锁定、交由 pip 自动解析的部分
+# ---------------------------------------------------------------------------
+# vllm==0.31.0 声明了 101 条依赖。上面已锁定其中影响推理结果或容易冲突的
+# （torch 三件套、transformers、tokenizers、pydantic、numpy…）；其余由 pip
+# 按 PyPI 当期兼容版本自动安装，本文件不锁版本。其中比较重要的有：
+#     torchcodec  >=0.14      vllm 硬依赖（音视频解码）
+#     protobuf    >=5.29.6    vllm 硬依赖（且排除了若干有问题的版本）
+#     ray / xformers / outlines 等（vllm 运行时按需拉取）
+#
+# 若你要「逐字节可复现」的环境，第一次装好并验证能跑通后，立刻存一份完整锁：
+#     pip freeze > requirements.lock.txt
+# 以后重建就用： pip install -r requirements.lock.txt
+# （lock 文件会包含全部 300+ 个包，并把 torch 记为 2.13.0+cu130）
+#
+# 已核验的一致性（按 PyPI 元数据逐条比对，本文件内部不自相矛盾）：
+#     vllm 0.31.0        要求 torch==2.13.0 / torchaudio==2.11.0 / torchvision==0.28.0
+#                        / transformers>=5.10.4,<5.18.0 / tokenizers>=0.21.1 / pydantic>=2.12
+#     torchvision 0.28.0 要求 torch==2.13.0
+#     transformers 5.17.0要求 tokenizers>=0.23.1,<0.24.0
+#     sentence-transformers 6.1.0 要求 transformers>=5.0.0,<6.0.0
+#     FlagEmbedding 1.4.2 要求 transformers>=4.44.2,<6.0.0
+#     speechbrain 1.1.1  要求 torch>=2.1.0 / torchaudio>=2.1.0
+#     → 与本文件的 pin 全部吻合
+
+
+# ============================================================================
+# ⚠️ TTS 引擎：必须**单独两步**安装（不能放进上面的清单）
+# ============================================================================
+# engine/tts.py 需要 `from nanovllm_voxcpm import VoxCPM`。
+# 它来自 **Nano-vLLM-VoxCPM** 项目 —— 注意**不是** OpenBMB/VoxCPM 那个仓库：
+#
+#     PyPI 包名 : nano-vllm-voxcpm
+#     import 名 : nanovllm_voxcpm
+#     源码仓库  : https://github.com/a710128/nanovllm-voxcpm
+#
+# 为什么不写进上面的清单：它硬依赖 `flash_attn`，而 PyPI 上 flash-attn
+# **只有源码包、没有预编译轮子**，会在安装时触发本地编译（30~60 分钟）。
+# 放进清单会让 `pip install -r requirements.txt` 整体变慢甚至失败。
+#
+# ---- 第 1 步：编译安装 flash-attn（先做，且必须用 --no-build-isolation）----
+#   export CUDA_HOME=/usr/local/cuda
+#   export PATH=$CUDA_HOME/bin:$PATH          # 让 nvcc 可见（本机 nvcc 3.3 在 /usr/local/cuda/bin）
+#   pip install flash-attn==2.8.3.post1 --no-build-isolation
+#
+#   · --no-build-isolation 是关键：不加的话 pip 会在隔离环境里编译，
+#     那里看不到你已装好的 torch，必然失败。
+#   · 编译吃内存，可加 MAX_JOBS 控制并行度：MAX_JOBS=8 pip install ...
+#   · **已知风险**：flash-attn 官方预编译轮子最高只到 torch 2.10，
+#     没有任何 cu13 + torch2.13 + cp311 的轮子（已全量核验 4528 个 wheel）。
+#     所以本项目这套 torch 2.13 只能源码编译，且**未经验证**是否编译通过。
+#     若报 nvcc/gcc 版本错误，可尝试： export NVCC_PREPEND_FLAGS="-allow-unsupported-compiler"
+#
+# ---- 第 2 步：安装 TTS 引擎（flash-attn 已满足，不会再触发编译）----
+#   pip install nano-vllm-voxcpm==2.0.4
+#   python -c "import nanovllm_voxcpm; print('TTS OK')"
+#
+# 装好后 TTS 权重用 models/VoxCPM1.5/（仓库里已有）——那是**模型权重**，
+# 与上面这个**推理引擎**是两回事，别再 clone OpenBMB/VoxCPM 了。
+#
+# 附：nano-vllm-voxcpm 2.0.4 声明的依赖（供参考）
+#     torch!=2.6.*,>=2.5.0 / torchaudio / triton>=3.0.0 / transformers>=4.51.0
+#     xxhash / tqdm / numpy / librosa / pydantic / soundfile>=0.13.1
+#     flash_attn（Linux）/ torchcodec
+#     → 这些在本文件第 1~11 节里基本都已锁定或会被 pip 解析，无冲突
+
+
+# ============================================================================
+# 可选组件（按需安装；未安装不影响主链路，缺失时对应环境变量别开）
+# ============================================================================
+# 这里刻意**不写具体版本号**——它们当前未安装，凭空写版本号等于编造。
+# 需要时请自行安装并用 `pip freeze | grep <包名>` 回填版本。
+#
+# WebRTC 接入（start_livekit.sh 用；另需 livekit-server 可执行文件）
+#   livekit-agents[silero]
+#   livekit
+#
+# Smart Turn v3 语义判停（USE_SMART_TURN=1）
+#   pipecat-ai
+#
+# 投机式 ASR（USE_MOONSHINE_ASR=1，Moonshine Tiny，CPU）
+#   moonshine-onnx
+#
+# FireRedVAD（USE_FIRERED_VAD=1）
+#   fireredvad
+#
+# FireRedASR2 上游离线工具（仅离线批量转写/评测用；在线链路不需要）
+#   kaldi-native-fbank
+#   textgrid
+#   注：FireRedASR2 的**在线**使用还依赖 engine/fireredasr2/models/ 子包，
+#       该子包不在仓库里，因此 USE_FIRERED_ASR=1 目前不可用，详见 README 第 16 节。

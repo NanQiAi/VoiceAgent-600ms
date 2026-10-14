@@ -1,0 +1,67 @@
+# .gitignore —— 只入库「代码 + 文档 + 必需的小数据」
+# 模型权重、语音数据集、运行产物都不入库；拉到代码后按 README「第二部分 · 部署」自行准备。
+#
+# ⚠️ 每个模式必须独占一行：.gitignore **不支持行尾注释**。
+#    写成 `models/   # 说明` 会被当成"含空格和 # 的模式"，从而完全不生效。
+#
+# ⚠️ 本文件只对「尚未被 git 跟踪」的文件生效。已经提交过的大文件不会因为加了一行就消失，
+#    需要 `git rm --cached <路径>` 再提交一次。
+
+# ---- 1. 大文件：模型权重 / 数据集 / 音频素材 ----
+# Qwen3-14B-AWQ、VoxCPM1.5、SenseVoiceSmall、silero-vad 等全部权重（24GB）
+models/
+# 15GB 语音数据集，当前代码不读它
+data/tts_chinese_dataset/
+# 参考音频 / 音色克隆素材
+data/*.wav
+# 兜底：万一权重被下到仓库别处（GitHub 单文件上限 100MB）
+*.safetensors
+*.ckpt
+*.pth
+
+# ---- 2. 运行产物 ----
+# 日志与 *.pid（voiceagent_env.sh 的 VA_LOG_DIR 默认落这里）
+logs/
+# FAISS 索引落盘前缀（当前每次启动都在内存重建，属预留）
+data/rag_index*
+*.log
+*.pid
+nohup.out
+
+# ---- 3. Python 缓存与构建产物 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.cache/
+# 虚拟环境（误提交动辄 1GB+）
+venv/
+.venv/
+env/
+ENV/
+
+# ---- 4. 测试 / 类型检查缓存 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- 5. 本地私有：证书与密钥（公开仓库尤其别传）----
+# USE_SSL=1 时放自签的 cert.pem / key.pem
+certs/
+# 环境变量文件（API key 等）；允许提交示例文件
+.env
+.env.*
+!.env.example
+
+# ---- 6. IDE ----
+.idea/
+.vscode/
+
+# ---- 7. 操作系统生成 ----
+.DS_Store
+Thumbs.db
+desktop.ini
