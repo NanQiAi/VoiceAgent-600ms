@@ -1,8 +1,0 @@
-__pycache__/
-*.pyc
-models/
-certs/
-cloudflared
-*.log
-*.wav
-*.mp3
