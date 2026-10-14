@@ -179,6 +179,7 @@
 | `start_vllm.sh` | 只启动 LLM 服务（调试用） | ⭐⭐ |
 | `test_rag.py` | RAG 检索方案的 A/B 基准脚本（bge-small/bge-m3 × 有无 reranker） | ⭐ |
 | `check_deps.py` | 依赖自检：逐个 import 并打印可用/缺失，用来确认环境装全了 | ⭐ |
+| `models/download_model.py` | 用 modelscope 批量下载 7 个权重（⚠️ `local_dir` 写死为本机绝对路径，用前先改，见 9.2） | ⭐ |
 
 **传输方式**：WebSocket（`ws_server.py` + `static/voice_agent.html`）。
 走 TCP，所以打断需要前端显式 `flush` 播放队列（见第四部分 Barge-in 一节）。
@@ -967,7 +968,9 @@ python /tmp/check_deps.py
 
 ### 9.1 目录约定（**必须严格按这个结构放**）
 
-所有模型都放在仓库根目录的 `models/` 下。**该目录不在仓库里，需要你创建**：
+所有模型都放在仓库根目录的 `models/` 下。仓库里的 `models/` 目录**只含一个下载脚本**
+（`models/download_model.py`，用法见 9.2），**权重本身不入库**，需要你自行下载。
+若目录不存在（比如你只取了部分文件），先建一下：
 
 ```bash
 cd /path/to/600ms_voice_agent
@@ -1017,6 +1020,20 @@ print('下载到:', p)
 | DTLN | `breizhn/DTLN` 官方仓库的 ONNX 模型 |
 
 > 我无法在当前环境联网核实每个模型 ID 的当期名称，**请以各项目官方页面为准**。
+
+**省事的做法**：仓库里的 `models/download_model.py` 会把 7 个模型一次性拉下来
+（SenseVoiceSmall / MiniCPM4.1-8B-GPTQ / VoxCPM1.5 / Qwen3-14B-AWQ / bge-small-zh-v1.5 /
+bge-m3 / bge-reranker-v2-m3）：
+
+```bash
+pip install modelscope
+python models/download_model.py
+```
+
+> ⚠️ **用之前先改路径**：该脚本里 7 处 `local_dir` 都是**写死的本机绝对路径**
+> （`/home/victor/code/600ms_voice_agent/models/...`），换机器或换目录会把权重下到错误位置。
+> 另外它**不包含 `snakers4_silero-vad`**（那个要按上表单独取 `silero_vad.jit`），
+> 末尾还有一段 silero-vad 的实验性代码（会联网 `torch.hub.load`），跑完下载可以直接忽略。
 
 ### 9.3 模型自检
 

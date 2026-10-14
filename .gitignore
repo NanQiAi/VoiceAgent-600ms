@@ -8,8 +8,12 @@
 #    需要 `git rm --cached <路径>` 再提交一次。
 
 # ---- 1. 大文件：模型权重 / 数据集 / 音频素材 ----
-# Qwen3-14B-AWQ、VoxCPM1.5、SenseVoiceSmall、silero-vad 等全部权重（24GB）
-models/
+# 权重目录（24GB）：忽略 models/ 里的**内容**，但保留目录本身。
+# ⚠️ 这里必须是 `models/*` 而不是 `models/`：父目录被整体排除后，git 不会进入该目录
+#    去检查里面的例外规则，下面的 `!models/download_model.py` 会**静默失效**。
+models/*
+# 拉权重的脚本属于项目代码，要入库（Qwen3-14B-AWQ / SenseVoiceSmall / MiniCPM4.1-8B-GPTQ 等）
+!models/download_model.py
 # 15GB 语音数据集，当前代码不读它
 data/tts_chinese_dataset/
 # 参考音频 / 音色克隆素材
