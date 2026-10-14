@@ -103,13 +103,14 @@ RAG_SCORE_THRESHOLD = float(os.environ.get("RAG_SCORE_THRESHOLD", "0.35"))
 # 缺失则静默跳过、用模型自带音色。⚠️ 换素材需重启（只在启动时注册一次）
 VOICE_PROMPT_WAV = os.environ.get(
     "VOICE_PROMPT_WAV",
-    os.path.join(BASE_DIR, "data", "lipsync_real_clone_sample_5s.wav"),
+    # os.path.join(BASE_DIR, "data", "lipsync_real_clone_sample_5s.wav"),
+    os.path.join(BASE_DIR, "data", "zh_vo_Huanglong_main_1_2EX_51_6.wav"),
 )
 # 上面那段音频的**逐字转写**：VoxCPM 用它做文本-音频对齐，写错会明显拉低相似度与韵律。
 # 它不是提示词、不参与 LLM。留空则退化成“只有音频、无文本对齐”
 VOICE_PROMPT_TEXT = os.environ.get(
     "VOICE_PROMPT_TEXT",
-    "hello大家好呀我是毒舌表妹豆角给你拆解AI圈儿又有什么专门吓唬你的大新闻",
+    "大家好，我是Voice Agent",
 )
 
 # ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ VOICE_PROMPT_TEXT = os.environ.get(
 # 置空 = 关闭主动问候。改文案会改变首句 TTS 时长，属于首响体验的一部分
 GREETING_TEXT = os.environ.get(
     "GREETING_TEXT",
-    "您好，我是面壁智能的Voice services Agent。有什么可以帮您的呢？",
+    "您好，我是Voice Agent。有什么可以帮您的呢？",
 )
 
 # ---------------------------------------------------------------------------

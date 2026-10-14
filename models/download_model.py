@@ -9,7 +9,6 @@ model_dir = snapshot_download(
 )
 print(model_dir)
 
-
 model_id = "speechbrain/spkrec-ecapa-voxceleb"
 # 下载到目标目录，文件直接落在 local_dir
 model_dir = snapshot_download(
@@ -28,7 +27,6 @@ model_dir = snapshot_download(
 )
 print(model_dir)
 
-
 model_id = "FireRedTeam/FireRedASR2-AED"
 # 下载到目标目录，文件直接落在 local_dir
 model_dir = snapshot_download(
@@ -37,7 +35,6 @@ model_dir = snapshot_download(
     # revision="master" #可选，指定版本
 )
 print(model_dir)
-
 
 model_id = "iic/SenseVoiceSmall"
 # 下载到目标目录，文件直接落在 local_dir
