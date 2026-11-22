@@ -35,7 +35,7 @@ def load_engines():
     """一次性装配全部引擎，写进 `runtime.engine`（阻塞数十秒、占 GPU 显存）。
 
     顺序（先轻后重）：VAD → 投机 ASR → 主 ASR → RAG(建索引) → LLM 工厂 →
-    TTS(加载 + warmup) → filler(预合成)。不捕获异常：模型缺失/显存不足会直接抛出终止进程
+    TTS(加载 + warmup)。不捕获异常：模型缺失/显存不足会直接抛出终止进程
     （启动期快速失败优于"带残缺引擎服务"）。函数内的 import 都是延迟导入。
     """
     from engine.vad import SileroVAD
@@ -43,7 +43,6 @@ def load_engines():
     from engine.llm import LLMChat
     from engine.tts import KokoroTTS
     from engine.rag import RAGEngine
-    from engine.filler import Filler
 
     reg = runtime.engine
 
@@ -110,12 +109,6 @@ def load_engines():
     log.info("Warming up TTS...")
     tts.warmup()
     reg["tts"] = tts
-
-    # ── filler：把几条语气词预合成成裸 PCM，填补 THINKING 阶段的听感空档 ──
-    log.info("Pre-generating filler words...")
-    filler = Filler(tts)
-    filler.pregenerate()
-    reg["filler"] = filler
 
     log.info("=== All engines loaded (v%s) ===", VERSION)
     log.info("  VAD: Silero（固定）")

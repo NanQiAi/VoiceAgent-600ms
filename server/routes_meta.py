@@ -56,8 +56,7 @@ async def api_info():
                     "voice": KokoroTTS.VOICE, "sample_rate": TTS_SAMPLE_RATE},
             "embedding": {"name": Path(EMBED_MODEL_DIR).name},
         },
-        "features": [
-            "filler_words", "sentence_streaming", "barge_in",
+        "features": [ "sentence_streaming", "barge_in",
             "utterance_aggregation", "experience_layer_d1_d4", "crash_safe",
             "rag_confidence", "context_summary",
         ],

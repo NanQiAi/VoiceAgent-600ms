@@ -74,10 +74,6 @@ export const MESSAGE_HANDLERS = {
     el('turnCount').textContent = msg.turn || '';
   },
 
-  // 思考期语气词（服务端顺序：filler(JSON) → audio_start(turn=N) → 二进制音频）
-  filler(msg) {
-    appendMessage('filler', msg.text);
-  },
 
   // RAG 命中的上下文
   rag(msg) {

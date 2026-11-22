@@ -11,7 +11,7 @@
 包内分两层，依赖方向 **自上而下**，下层绝不 import 上层：
 
     engine/
-    ├── asr.py  llm.py  rag.py  tts.py  vad.py  filler.py   ① 可替换引擎
+    ├── asr.py  llm.py  rag.py  tts.py  vad.py          ① 可替换引擎
     └── dialog/                                             ② 对话状态机
 
 ① 可替换引擎
@@ -20,7 +20,6 @@
     rag.py      bge 向量化 + FAISS 检索 + 置信度阈值
     tts.py      Kokoro TTS（24kHz）
     vad.py      Silero VAD
-    filler.py   语气词预合成
     六个模块**互不 import**，只通过统一的方法签名通信；换实现只需提供同名方法。
 
 ② dialog/ —— 对话状态机

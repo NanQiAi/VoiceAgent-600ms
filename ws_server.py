@@ -4,7 +4,7 @@
 
 后端实现全部在 `engine/` 包里，按三层组织（详见 `engine/__init__.py`）：
 
-    engine/asr.py llm.py rag.py tts.py vad.py filler.py   ① 可替换引擎
+    engine/asr.py llm.py rag.py tts.py vad.py            ① 可替换引擎
     engine/dialog/                                        ② 对话状态机
     server/                                               ③ 服务层（独立顶层包）
 

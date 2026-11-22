@@ -3,7 +3,7 @@
 上行：二进制帧 = 16kHz 单声道 int16 裸 PCM（512 采样/帧）；
       文本帧 = JSON 控制消息 `text_input` / `manual_barge_in` / `reset`。
 下行：二进制帧 = 24kHz 单声道 int16 裸 PCM；
-      文本帧 = `ready` / `state` / `asr` / `rag` / `filler` / `llm_sentence` / `llm` / `audio_start` /
+      文本帧 = `ready` / `state` / `asr` / `rag` / `llm_sentence` / `llm` / `audio_start` /
               `metrics` / `system_message` / `barge_in` / `session_end` / `error` /
               `reset_ack`。
 契约：`turn` 是轮次序列号（`audio_start` 让前端丢弃旧轮次的迟到音频）；
@@ -138,10 +138,10 @@ async def ws_voice(ws: WebSocket):
 
     send = DownlinkSender(ws, session_log)
 
-    # 装配状态机：asr/rag/tts/filler 用全局共享实例，vad/llm 用本会话独有实例。
+    # 装配状态机：asr/rag/tts 用全局共享实例，vad/llm 用本会话独有实例。
     cm = ConversationManager(
         asr=runtime.engine["asr"], llm=llm, tts=runtime.engine["tts"],
-        rag=runtime.engine["rag"], vad=vad, filler=runtime.engine["filler"],
+        rag=runtime.engine["rag"], vad=vad,
         send_fn=send,
         spec_asr=runtime.engine.get("spec_asr"),
         experience_config=build_experience_config(),

@@ -1,6 +1,6 @@
 """E2E对话 · 下行发送
 
-所有“把消息/音频发到前端”的动作集中在这里：系统话术、语气词、TTS 音频。
+所有“把消息/音频发到前端”的动作集中在这里：系统话术、TTS 音频。
 每条下行都带 turn 序列号，前端靠它丢弃旧轮次的迟到音频。
 """
 
@@ -38,33 +38,6 @@ class Transport:
             await self._send({"_audio": audio_bytes[i:i + TTS_SEND_CHUNK_BYTES]})
             # sleep(0) 是"最小让出"：把控制权交给事件循环处理其它就绪回调（如收音频帧）
             await asyncio.sleep(0)
-
-
-    async def _send_filler(self):
-        """在 THINKING 期间下发一条预缓存的语气词（"嗯/好的"），盖住 RAG+LLM 首响的静音空档。
-
-        音频在服务启动时就合成好了（见 engine/filler.py），这里是纯内存+发送。副作用：调
-        `filler.get_filler()`（会自增轮询游标）；下发 filler/audio_start/裸音频。全捕获，失败只告警。
-        """
-        try:
-            filler_text, filler_bytes = self.filler.get_filler()
-            if filler_bytes:
-                # 2s 硬上限：超长 filler 会压到正式回答上变成串音（与 filler.py 的 MAX_FILLER_SEC 呼应）
-                max_filler = 24000 * 2 * 2  # 2s hard cap for fillers
-                if len(filler_bytes) > max_filler:
-                    log.warning("[Turn %d] Filler '%s' oversized (%d bytes) — truncating",
-                                self._turn, filler_text, len(filler_bytes))
-                    filler_bytes = filler_bytes[:max_filler]
-                await self._send({"type": "filler", "text": filler_text, "turn": self._turn})
-                # audio_start 让前端把 playableTurn 指向当前 turn，随后的音频才会被播放
-                await self._send({"type": "audio_start", "turn": self._turn})
-                await self._send({"_audio": filler_bytes})
-                log.info(
-                    "[Turn %d] Filler sent: '%s' (%d bytes)",
-                    self._turn, filler_text, len(filler_bytes),
-                )
-        except Exception as e:
-            log.warning("Filler send failed: %s", e)
 
 
     async def _play_system_tts(self, text: str, turn: int, session_end_reason: str = None):

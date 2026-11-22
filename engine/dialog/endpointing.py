@@ -44,7 +44,7 @@ class Endpointing:
         """判停：把本轮音频冻结成一段、起 pipeline 后台任务，并立即切到 THINKING。
 
         副作用：取消累积器定时器；复位 `_silence_count`/`_barge_confirm_count`/THINKING 后到语音缓冲；
-        自增 `_turn`；下发 state=thinking（长句时先发一句 filler）；把投机 ASR 的结果/长度/句柄摘走转移给 pipeline。
+        自增 `_turn`；下发 state=thinking；把投机 ASR 的结果/长度/句柄摘走转移给 pipeline。
         这里**不 await pipeline**：否则 feed_audio 会被整条 LLM+TTS 链路阻塞，用户说话没人收集。
         """
         # 本轮音频即将定稿，缓冲器的兜底定时器必须取消（否则 3s 后会把旧文本再发一轮）
@@ -56,12 +56,6 @@ class Endpointing:
         self._thinking_has_speech = False
         self._turn += 1
         await self._send({"type": "state", "state": "thinking"})
-
-        audio_duration_ms = len(self._audio_buffer) * CHUNK_MS
-        # 累积器里已有待合并短文本时马上还会有 pipeline 在跑，再插 filler 会显得语无伦次，故跳过
-        has_pending_accum = len(self._asr_accum_texts) > 0
-        if self.filler and audio_duration_ms > 1000 and not has_pending_accum:
-            await self._send_filler()
 
         if self._audio_buffer:
             audio = np.concatenate(self._audio_buffer)

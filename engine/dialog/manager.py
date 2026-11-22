@@ -35,7 +35,7 @@ THINKING --用户又开口--> 追加进同一轮(_thinking_extra_buffer)，不�
 | `dialog/metrics.py`     | 单会话延迟统计 `SessionMetrics` |
 | `dialog/accumulator.py` | ASR 文本累积器（短句先缓存、拼整句再送 LLM） |
 | `dialog/endpointing.py` | 判停（按说话时长自适应选静音阈值） |
-| `dialog/transport.py`   | 下行发送（系统话术/语气词/TTS 音频） |
+| `dialog/transport.py`   | 下行发送（系统话术/TTS 音频） |
 | `dialog/streaming.py`   | LLM 句子流 → TTS 音频流（首响关键路径） |
 | `dialog/pipeline.py`    | 一轮对话的编排：ASR→RAG→LLM→TTS + 错误兜底 |
 | `dialog/session.py`     | 会话生命周期：问候/空闲超时/文本输入 |
@@ -68,7 +68,7 @@ from .state import State
 from .streaming import Streaming
 from .transport import Transport
 
-# 日志命名空间与 ws_server/tts/filler 等统一成 "Voice Agent.*"，
+# 日志命名空间与 ws_server/tts 等统一成 "Voice Agent.*"，
 # 便于一条命令过滤整条链路：grep "Voice Agent" logs/voice_agent.log
 log = logging.getLogger("Voice Agent.cm")
 
@@ -93,7 +93,7 @@ class ConversationManager(
     # 截断比丢弃安全（丢块会造成爆破音）。transport 与 streaming 两个基类共用这个值。
     MAX_TTS_AUDIO_BYTES = 24000 * 2 * 30
 
-    def __init__(self, asr, llm, tts, rag, vad, filler, send_fn: Callable[..., Awaitable],
+    def __init__(self, asr, llm, tts, rag, vad, send_fn: Callable[..., Awaitable],
                  spec_asr=None,
                  experience_config: dict = None):
         """装配依赖、建立初始状态与 D1~D4 体验层参数（不加载模型、不发网络请求）。
@@ -103,7 +103,7 @@ class ConversationManager(
         tts.synthesize_stream 逐块 yield
         {"audio","chunk_idx","ttfa_ms"}（24kHz）；rag.get_context -> {"context","total_ms"}；
         vad.process_chunk(chunk, sr) -> 含 "speech_prob"（本项目 VAD 固定为 Silero，无说话人判定）；
-        filler.get_filler -> (文本, 裸 PCM int16)；send_fn(dict) 中 {"_audio": bytes} 走二进制帧，其余 JSON。
+        send_fn(dict) 中 {"_audio": bytes} 走二进制帧，其余 JSON。
         spec_asr 可选，None 时能力降级；experience_config 来自 config.py。
         """
         self.asr = asr
@@ -112,7 +112,6 @@ class ConversationManager(
         self.tts = tts
         self.rag = rag
         self.vad = vad
-        self.filler = filler
         self.spec_asr = spec_asr
         self._send = send_fn
 

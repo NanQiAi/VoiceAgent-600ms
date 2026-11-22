@@ -11,7 +11,7 @@ state.py        5 状态枚举 `State`
 metrics.py      单会话延迟统计 `SessionMetrics`
 accumulator.py  ASR 文本累积：短句先缓存、拼整句再送 LLM
 endpointing.py  判停：按本次说话时长自适应选静音阈值
-transport.py    下行发送：系统话术 / 语气词 / TTS 音频
+transport.py    下行发送：系统话术 / TTS 音频
 streaming.py    LLM 句子流 → TTS 音频流（首响关键路径）
 pipeline.py     一轮对话的编排：ASR → RAG → LLM → TTS + 错误兜底
 session.py      会话生命周期：问候 / 空闲超时 / 文本输入

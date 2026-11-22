@@ -1,7 +1,7 @@
 """进程级共享状态：全局引擎表 + 活动会话表 + 累计计数。
 
 为什么集中成一个对象：
-  · 引擎表是**跨会话共享**的单例（VAD 模板、ASR、RAG、TTS、filler 只加载一份）；
+  · 引擎表是**跨会话共享**的单例（VAD 模板、ASR、RAG、TTS 只加载一份）；
   · 会话表与计数是**进程级**统计，`/api/metrics` 和每个连接都要读写。
 
 全部只在 asyncio 事件循环单线程里读写（uvicorn 单 worker），所以**不加锁**。
@@ -15,7 +15,7 @@ class Runtime:
 
     def __init__(self):
         # 引擎表：load_engines() 启动期写入，之后所有请求只读。
-        # 键：vad_type / vad_template / spec_asr / asr / rag / llm_factory / tts / filler
+        # 键：vad_type / vad_template / spec_asr / asr / rag / llm_factory / tts
         self.engine: dict = {}
 
         # 活动会话：{session_id: {"started": epoch秒, "cm": ConversationManager}}

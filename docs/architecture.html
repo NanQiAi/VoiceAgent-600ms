@@ -187,8 +187,8 @@ const STAGES = [
     file: "ws_server.py → server/loader.py",
     what: "进程启动时一次性装配全部引擎，装配完才开始收连接。每个 WebSocket 连接复用这些共享实例（VAD / LLM 除外，见下一步）。",
     input: "models/ 下的 5 份权重（Parakeet / bge-m3 / Silero VAD / Kokoro / spaCy）",
-    output: "runtime.engine = {asr, rag, tts, filler, vad_template, spec_asr, llm_factory}",
-    formula: "顺序（先轻后重）：VAD → ASR → RAG(建索引) → LLM 工厂 → TTS(预热) → filler(预合成)",
+    output: "runtime.engine = {asr, rag, tts, vad_template, spec_asr, llm_factory}",
+    formula: "顺序（先轻后重）：VAD → ASR → RAG(建索引) → LLM 工厂 → TTS(加载 + 预热)",
     subs: [
       { n: "代码分层", note: "<code>config.py</code>（唯一参数源）→ <code>engine/</code>（引擎 + 状态机）→ <code>server/</code>（HTTP/WS）→ <code>ws_server.py</code>（入口）" },
       { n: "RAG 建索引", note: "59 条 KB 一次性编码成 (59, 1024) 矩阵，写入内存 FAISS，约 2 s（只在启动期付一次）" },
@@ -556,7 +556,7 @@ const SM_STATES = [
     id: "THINKING", cn: "思考中", kind: "logic",
     briefly: "已判停，ASR→RAG→LLM 在跑，等第一句",
     detail: {
-      meaning: "音频已定稿，整条 ASR → RAG → LLM 链路在后台跑，等 LLM 吐出第一句。这期间可以播一条 filler 盖住空档。",
+      meaning: "音频已定稿，整条 ASR → RAG → LLM 链路在后台跑，等 LLM 吐出第一句。",
       enter: "LISTENING 判停（_on_endpointing）· 累积器超时兜底",
       perFrame: "**不再判停**。如果又检测到语音，就把帧追加进 <code>_thinking_extra_buffer</code> —— 用于覆盖「用户说到一半被静音误判」的情况。",
       leave: "<b>→ SPEAKING</b>：首句就绪　|　<b>→ LISTENING</b>：ASR 过短/空结果 / 手动打断　|　<b>→ IDLE</b>：pipeline 异常收尾",

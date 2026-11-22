@@ -40,7 +40,7 @@ class KokoroTTS:
 
     # ── 固定的音频与音色参数（不做克隆、不开放切换）──────────────────────────
     # 输出采样率：Kokoro 声码器的硬约束。状态机用它算发送分片与 30s 安全上限，
-    # filler 用它算截断字节数，/api/info 靠它告诉前端按什么速率播放。
+    # /api/info 靠它告诉前端按什么速率播放。
     SAMPLE_RATE = TTS_SAMPLE_RATE
 
     # 音色：标准美式英语女声。选它的理由 —— 社区评级 A、韵律最自然、
@@ -159,7 +159,7 @@ class KokoroTTS:
     def synthesize(self, text: str) -> dict:
         """非流式整句合成，返回 dict（audio / sr / ttfa_ms / total_ms / chunks）。
 
-        给"不适合流式"的场景用：启动期预合成 filler。主链路请用 `synthesize_stream()`。
+        给"不适合流式"的场景用（如 `warmup()` 预热）。主链路请用 `synthesize_stream()`。
         Kokoro 按内部标点把文本切成若干段、每段一次性出音频，所以 `chunks` = 段数。
         `audio` 是未量化的 float32 裸 PCM；文本为空时是空数组，调用方需自行判断。
         """

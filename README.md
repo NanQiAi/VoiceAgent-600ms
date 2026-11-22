@@ -118,16 +118,15 @@ _run_pipeline()
 
 > 指标**不含** VAD 判停等待（**416~640ms**）——那是用户说完话到系统开始处理之间的静默。
 
-**六个让它变快的工程手段**：
+**五个让它变快的工程手段**：
 
 | # | 手段 | 效果 |
 |---|---|---|
 | 1 | **流式 TTS** — 逐句合成、逐段下发，不等整段回答 | 用户听到第一句时 LLM 还在生成后半段 |
 | 2 | **投机式 ASR** — 静音 160ms 就先跑一遍 ASR | 判停后直接复用，省一次 ASR |
 | 3 | **自适应判停** — 按说话时长选静音阈值 | 少误切断 |
-| 4 | **语气词（filler）** — 思考期先播 "Well," / "Sure," | 盖住空档，体感更快 |
-| 5 | **Turn 序列号** — 每轮 `audio_start(turn=N)`，前端丢弃旧轮次音频 | 消除打断后的串音 |
-| 6 | **双层打断** — 服务端停发 + 前端 flush 播放队列 | 听感上立刻闭嘴 |
+| 4 | **Turn 序列号** — 每轮 `audio_start(turn=N)`，前端丢弃旧轮次音频 | 消除打断后的串音 |
+| 5 | **双层打断** — 服务端停发 + 前端 flush 播放队列 | 听感上立刻闭嘴 |
 
 ---
 
@@ -147,7 +146,6 @@ _run_pipeline()
 | `engine/rag.py` | bge 向量化 + FAISS 检索 + 置信度阈值 | ⭐⭐ |
 | `engine/asr.py` | **唯一的 ASR 实现**（Parakeet-TDT / transformers） | ⭐⭐ |
 | `engine/vad.py` | Silero VAD（CPU） | ⭐⭐ |
-| `engine/filler.py` | 语气词预合成与轮询取用 | ⭐ |
 | `static/` | 前端：`voice_agent.html`（88 行骨架）+ `css/` + `js/`（9 个 ES module） | ⭐⭐ |
 | `run.sh` | **唯一的启停入口**：配置 + 预检 + 启动 + 守护 + 排障 | ⭐⭐ |
 | `test/test_rag.py` | RAG 检索基准（bge-m3 × 有无 reranker）。10 条英文问句含 8 正例 + 2 负例，输出延迟与**正负例分数间隔**，用于判断阈值是否合理 | ⭐ |
@@ -159,7 +157,7 @@ _run_pipeline()
 
 ```
 engine/
-├── asr.py  llm.py  rag.py  tts.py  vad.py  filler.py   ① 可替换引擎（互不 import）
+├── asr.py  llm.py  rag.py  tts.py  vad.py          ① 可替换引擎（互不 import）
 └── dialog/                                             ② 对话状态机
     manager.py       门面（ConversationManager）
     constants.py     调优常量与音频契约
@@ -244,22 +242,17 @@ BARGE_IN_CONFIRM_CHUNKS = 2     # 连续 2 帧（≈64ms）才真打断，挡单
 每轮 `audio_start` 带 `turn=N`；前端只播当前授权轮次的音频。打断后 `playableTurn=0`，
 在途的旧轮次帧到达时被**直接丢弃**。这是"打断后不会冒出半句旧语音"的关键。
 
-### 4.5 Filler（语气词）
-
-`engine/filler.py` 在启动时把 5 条极短应答（`Well,` / `Sure,` / `Okay,` / `Right,` / `So,`）
-预合成成裸 PCM 缓存。THINKING 阶段先播一条，盖住 RAG+LLM 的空档。
-
-### 4.6 投机式 ASR（Speculative ASR）
+### 4.5 投机式 ASR（Speculative ASR）
 
 静音满 5 帧（≈160ms）且还没判停，就先用当前音频快照跑一次 ASR。
 若判停时音频没变长，直接复用结果，省掉一次 ASR 等待。阈值 `SPECULATIVE_ASR_CHUNKS`。
 
-### 4.7 ASR 文本累积
+### 4.6 ASR 文本累积
 
 VAD 误切或用户只说"嗯/那个"时，立刻送 LLM 既浪费一轮 turn 又容易答非所问，
 所以极短文本（≤4 字符）先缓存，等后续拼成整句再送（`ASR_ACCUM_*`）。
 
-### 4.8 5 个状态
+### 4.7 5 个状态
 
 ```
 IDLE ──VAD检出──> LISTENING ──静音达阈值──> THINKING ──首句就绪──> SPEAKING ──播完──> IDLE
@@ -298,7 +291,6 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | `state` | 状态机变化（idle / listening / thinking / speaking） |
 | `asr` | 识别结果（`text` / `latency_ms` / `turn`；`source="text"` 表示文本回显） |
 | `rag` | RAG 命中的上下文 |
-| `filler` | 语气词文本（随后跟二进制音频） |
 | `llm_sentence` | LLM 生成的一句（`sentence_idx=0` 时开新气泡） |
 | `llm` | 整轮 LLM 输出结束（前端据此收尾播放） |
 | `audio_start` | **播放授权**：随后到达的音频属于第 `turn` 轮 |
@@ -677,7 +669,6 @@ EOF
 2026-11-22 11:03:56,276 [INFO] Voice Agent Server Loading TTS (Kokoro-82M, voice=af_heart)...
 2026-11-22 11:03:57,290 [INFO] Voice Agent.tts Kokoro TTS loaded (dir=.../models/Kokoro-82M, ...)
 2026-11-22 11:03:57,290 [INFO] Voice Agent Server Warming up TTS...
-2026-11-22 11:03:58,566 [INFO] Voice Agent.filler Filler cache ready: 5 items
 2026-11-22 11:03:58,566 [INFO] Voice Agent Server === All engines loaded (v3.0) ===
 ```
 
@@ -688,7 +679,6 @@ EOF
 | `Voice Agent Server` | 装配、连接生命周期、路由 |
 | `Voice Agent.cm` | 对话状态机（`engine/dialog/` 全部 mixin） |
 | `Voice Agent.tts` | TTS 加载与合成 |
-| `Voice Agent.filler` | 语气词预合成 |
 
 ```bash
 grep "Voice Agent" logs/voice_agent.log            # 整条 pipeline
@@ -942,7 +932,6 @@ server/routes_voice.py  ws_voice()      ← 连接生命周期、消息分发
 | **打断（barge-in）** | AI 说话时用户插话，AI 立即停止 |
 | **Turn** | 一轮对话的序列号，用于丢弃旧轮次的在途音频 |
 | **投机 ASR** | 判停前提前跑 ASR，判停后复用结果 |
-| **Filler** | 思考期先播的语气词（`Well,` / `Sure,`），盖住空档 |
 | **D1~D4** | 体验层需求编号：D1 问候 / D2 空闲超时 / D3 错误恢复 / D4 告别识别 |
 | **多继承组合** | `ConversationManager` 由 6 个职责基类（`Session` / `Pipeline` / `Streaming` / `Transport` / `Endpointing` / `AsrAccumulator`）组合而成，共享同一份 `self` 状态 |
 
