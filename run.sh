@@ -435,6 +435,7 @@ va_preflight() {
                 "sentence_transformers:sentence-transformers" "faiss:faiss-cpu" \
                 "kokoro:kokoro" "misaki:misaki[en]" \
                 "fastapi:fastapi" "uvicorn:uvicorn" "starlette:starlette" \
+                "websockets:websockets" \
                 "openai:openai" "httpx:httpx" \
                 "nest_asyncio:nest-asyncio"; do
         module="${pair%%:*}"
@@ -762,8 +763,11 @@ va_do_stop() {
 va_do_status() {
     echo "──────────────────────────────────────────────"
     printf "  %-22s %s\n" "进程" "状态"
+    # ss -p 只能看到自己用户的进程；端口被别的用户/容器占用时 pid 为空，
+    # 老写法会打出 "运行中 (PID )"，容易被误读成 PID 丢失。
     printf "  %-22s %s\n" "Voice Agent (:$VOICE_PORT)" \
-        "$(va_port_busy "$VOICE_PORT" && echo "运行中 (PID $(va_pids_on_port "$VOICE_PORT" | tr '\n' ' '))" || echo "未运行")"
+        "$(va_port_busy "$VOICE_PORT" && { p="$(va_pids_on_port "$VOICE_PORT" | tr '\n' ' ' | sed 's/ *$//')"; \
+             [ -n "$p" ] && echo "运行中 (PID $p)" || echo "运行中 (PID 需 root 查看)"; } || echo "未运行")"
     printf "  %-22s %s\n" "守护 watchdog" \
         "$(pids="$(va_watchdog_pids)"; [ -n "$pids" ] && echo "运行中 (PID $(echo "$pids" | tr '\n' ' '))" || echo "未运行")"
     if [ "$ENABLE_TUNNEL" = "1" ] && [ -n "$VPS_IP" ]; then

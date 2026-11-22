@@ -149,7 +149,7 @@ _run_pipeline()
 | `static/` | 前端：`voice_agent.html`（86 行骨架，只有 Start Call / Reset 两个按钮）+ `css/` + `js/`（9 个 ES module） | ⭐⭐ |
 | `run.sh` | **唯一的启停入口**：配置 + 预检 + 启动 + 守护 + 排障 | ⭐⭐ |
 | `test/test_rag.py` | RAG 检索基准（bge-m3 × 有无 reranker）。10 条英文问句含 8 正例 + 2 负例，输出延迟与**正负例分数间隔**，用于判断阈值是否合理 | ⭐ |
-| `check_deps.py` | 依赖自检：22 必需 + 2 可选，缺必需包时退出码 1 | ⭐ |
+| `check_deps.py` | 依赖自检：17 必需 + 1 可选（共 18 项），缺必需包时退出码 1 | ⭐ |
 | `models/download_model.py` | 批量下载 ASR / RAG / TTS 权重（路径按 `__file__` 推仓库根，任意目录可跑） | ⭐ |
 | `.env` / `.env.example` | 本地环境变量；`.env` 已 gitignore，`.env.example` 可提交 | ⭐ |
 
@@ -258,12 +258,16 @@ VAD 误切或用户只说"嗯/那个"时，立刻送 LLM 既浪费一轮 turn �
 IDLE ──VAD检出──> LISTENING ──静音达阈值──> THINKING ──首句就绪──> SPEAKING ──播完──> IDLE
                                             ↑                      │
                                             └──静音≥320ms── INTERRUPTED ←──VAD 自动打断──┘
-SPEAKING / THINKING ──手动打断(空格键/按钮)──> LISTENING
+SPEAKING / THINKING ──手动打断(协议 manual_barge_in，前端未接)──> LISTENING
 THINKING ──用户又开口──> 追加进同一轮，不打断
 ```
 
 两条打断路径去向不同：**VAD 自动打断**进 `INTERRUPTED`（需再静音 320ms 才继续处理后面的半句），
-**手动打断**直接回 `LISTENING`——按键是明确的"我要说话"，不必再等。
+**手动打断**直接回 `LISTENING`——用户是明确要说话，不必再等。
+
+> ⚠️ `manual_barge_in` 目前**只有协议与服务端实现**：页面上没有按钮、也没有快捷键
+> （只有 `Start Call` / `Reset` 两个按钮）。要触发需客户端自行发送，例如控制台执行
+> `app.socket.send(JSON.stringify({type:"manual_barge_in"}))`。
 
 状态通过 `{"type":"state","state":"..."}` 下发，前端显示状态灯。定义在 `engine/dialog/state.py`。
 
@@ -278,7 +282,7 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | 帧 | 含义 |
 |---|---|
 | **二进制** | 16kHz / 单声道 / int16 裸 PCM，**512 采样（32ms）一帧** |
-| `{"type":"manual_barge_in"}` | 手动打断（空格键/按钮），不需要 VAD 确认 |
+| `{"type":"manual_barge_in"}` | 手动打断，不需要 VAD 确认。**前端未提供入口**，需客户端自行发送 |
 | `{"type":"reset"}` | 复位会话（清对话历史与状态机） |
 
 ### 5.2 下行（服务端 → 客户端）

@@ -187,7 +187,7 @@ const STAGES = [
     file: "ws_server.py → server/loader.py",
     what: "进程启动时一次性装配全部引擎，装配完才开始收连接。每个 WebSocket 连接复用这些共享实例（VAD / LLM 除外，见下一步）。",
     input: "models/ 下的 5 份权重（Parakeet / bge-m3 / Silero VAD / Kokoro / spaCy）",
-    output: "runtime.engine = {asr, rag, tts, vad_template, spec_asr, llm_factory}",
+    output: "runtime.engine = {vad_type, vad_template, asr, rag, tts, spec_asr, llm_factory}",
     formula: "顺序（先轻后重）：VAD → ASR → RAG(建索引) → LLM 工厂 → TTS(加载 + 预热)",
     subs: [
       { n: "代码分层", note: "<code>config.py</code>（唯一参数源）→ <code>engine/</code>（引擎 + 状态机）→ <code>server/</code>（HTTP/WS）→ <code>ws_server.py</code>（入口）" },
