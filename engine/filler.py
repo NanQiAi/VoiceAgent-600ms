@@ -14,9 +14,9 @@ log = logging.getLogger("Voice Agent.filler")
 # 听起来像"我在听"而不是"我说完了"，避免用户误以为轮到自己说话而抢话（Barge-in）。
 FILLER_TEXTS = ["Well,", "Sure,", "Okay,", "Right,", "So,"]
 
-# 单条 filler 的硬上限（秒），来自 v3.0 的一次线上问题：旧版 TTS 偶发生成退化/停不下来
+# 单条 filler 的硬上限（秒）。来自一次真实故障：旧版 TTS 偶发生成退化/停不下来
 # （generation loop），一条语气词被合成十几秒，与后面正式回答叠着播（串音）。
-# conversation_manager._send_filler() 里还有一个 24000*2*2 的等价上限做二次防御。
+# engine/dialog/transport.py 的 `_send_filler()` 里还有一个 24000*2*2 的等价上限做二次防御。
 MAX_FILLER_SEC = 2.0
 
 

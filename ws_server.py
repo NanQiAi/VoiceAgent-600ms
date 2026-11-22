@@ -6,7 +6,7 @@
 
     engine/asr.py llm.py rag.py tts.py vad.py filler.py   ① 可替换引擎
     engine/dialog/                                        ② 对话状态机
-    engine/server/                                        ③ 服务层
+    server/                                               ③ 服务层（独立顶层包）
 
 音频约定：上行 16kHz、下行 24kHz（Kokoro），均单声道 int16 裸 PCM。
 参数与话术全部来自 `config.py`；无鉴权（连上即会话）。
@@ -22,7 +22,7 @@ import sys
 # 不依赖进程启动时的工作目录。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# nest_asyncio 的补丁在 engine/server/settings.py 的模块级执行（必须早于任何引擎导入），
+# nest_asyncio 的补丁在 server/bootstrap.py 的模块级执行（必须早于任何引擎导入），
 # 这里只是通过导入链间接触发它。
 import uvicorn
 

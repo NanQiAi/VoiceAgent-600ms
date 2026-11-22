@@ -18,7 +18,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class SessionMixin:
+class Session:
     """E2E对话 · 会话生命周期。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     async def process_ptt(self, audio: np.ndarray):

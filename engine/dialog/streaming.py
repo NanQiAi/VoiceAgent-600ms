@@ -15,7 +15,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class StreamingMixin:
+class Streaming:
     """E2E对话 · 流式播报（LLM 句子 → TTS 音频）。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     async def _stream_llm_tts(self, user_text, rag_context, turn, t_start, asr_ms, rag_ms):
@@ -32,7 +32,7 @@ class StreamingMixin:
         # 恰好把"为什么这次没触发打断"最需要看的信息丢掉。
         # （系统话术 _speak_system 与文本路径 _run_pipeline_from_text 都已各自重置）
         self._speak_log_count = 0
-        # 有界句子队列（maxsize=8，v3.0 G7 修复）：无界队列会让 LLM 生产远超消费速度、句子在内存里堆积；
+        # 有界句子队列（maxsize=8）：无界队列会让 LLM 生产远超消费速度、句子在内存里堆积；
         # 有界队列让生产者线程在 put 时阻塞，形成"线程侧背压"，TTS 消费多快就生成多快
         sentence_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
         full_response = ""

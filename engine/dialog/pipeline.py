@@ -21,7 +21,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class PipelineMixin:
+class Pipeline:
     """E2E对话 · 级联链路编排。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     async def _run_pipeline(self, audio: np.ndarray, turn: int,
@@ -56,7 +56,7 @@ class PipelineMixin:
                 pass
         finally:
             # 只有还停在 THINKING（即 inner 里没走到 SPEAKING）才需要回收状态：
-            # v3.0 的 G1 修复点——**不能**无条件把 SPEAKING 改回 IDLE，否则 _stream_llm_tts
+            # 关键约束——**不能**无条件把 SPEAKING 改回 IDLE，否则 _stream_llm_tts
             # 还在播报时状态就被提前清掉，导致打断判定失效/状态竞争
             if self.state == State.THINKING:
                 self.state = State.IDLE
@@ -265,7 +265,7 @@ class PipelineMixin:
         self.state = State.SPEAKING
         await self._send({"type": "state", "state": "speaking"})
 
-        # v3.0 G1 修复点：播报任务挂到 _speaking_task（供 reset 取消），并且**必须 await 它**——
+        # 关键约束：播报任务挂到 _speaking_task（供 reset 取消），并且**必须 await 它**——
         # 否则 _run_pipeline 会提前走完 finally，在 TTS 还在播时就把状态机复位
         self._speaking_task = self._track_task(
             self._stream_llm_tts(llm_user_text, rag_context, turn, t_start, asr_ms, rag_ms),

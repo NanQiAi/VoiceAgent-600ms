@@ -18,7 +18,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class EndpointingMixin:
+class Endpointing:
     """E2E对话 · 判停与打断判定。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     def _adaptive_endpoint_threshold(self) -> int:

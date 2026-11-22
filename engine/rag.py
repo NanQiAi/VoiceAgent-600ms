@@ -100,7 +100,7 @@ class RAGEngine:
         encode_ms = (time.perf_counter() - t0) * 1000
 
         self._doc_embeddings = embeddings.astype(np.float32)  # FAISS 只接受 float32
-        dim = embeddings.shape[1]  # bge-small-zh-v1.5 为 512，bge-m3 为 1024
+        dim = embeddings.shape[1]  # 由模型决定：当前 bge-m3 为 1024（更早的 bge-small 是 512）
         # IndexFlatIP = 精确暴力内积检索，无近似误差；知识库仅几十条，暴力搜索耗时在微秒级，
         # 不需要 IVF/HNSW 等近似索引（它们还会引入召回损失与额外参数）
         self._index = faiss.IndexFlatIP(dim)

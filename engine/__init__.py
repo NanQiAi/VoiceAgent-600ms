@@ -25,7 +25,7 @@
 
 ② dialog/ —— 对话状态机
     manager.py 门面 `ConversationManager`（音频入口 / 状态分支 / 打断 / 生命周期），
-    用 Mixin 组合 9 个职责模块，共享同一份会话状态。详见 `engine.dialog` 的包说明。
+    以多继承组合 6 个职责基类，共享同一份会话状态。详见 `engine.dialog` 的包说明。
 
 本文件刻意不写代码：`import engine` 不会连带拉起 torch / fastapi 等重依赖。
 """

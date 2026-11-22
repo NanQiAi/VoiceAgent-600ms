@@ -1,7 +1,8 @@
 """对话状态机：一条 WebSocket 连接 = 一个 `ConversationManager` 实例。
 
 `manager.py` 是门面（音频入口 / 状态分支 / 打断 / 生命周期），其余模块按职责拆开，
-由它用 Mixin 组合起来 —— 它们共享同一份 `self` 上的会话状态。
+由它以多继承组合起来 —— 其中 6 个是基类，`constants` / `state` / `metrics` 只是被引用的
+普通模块。它们共享同一份 `self` 上的会话状态。
 
 模块地图
 --------

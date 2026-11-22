@@ -18,7 +18,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class TransportMixin:
+class Transport:
     """E2E对话 · 下行发送。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     async def _send_audio(self, audio_bytes: bytes):

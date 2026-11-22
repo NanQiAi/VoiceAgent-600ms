@@ -5,7 +5,7 @@
 本项目**不支持本地大模型**（vLLM / Qwen3 那套已整体移除）。
 `chat()` 等整段回答（评测用）；`stream_sentences()` 把 delta 拼成完整句子逐句 yield，
 主链路用后者——首句一凑齐就送 TTS。多轮历史由本类维护，超出上限的旧轮次压成中文摘要。
-engine/server/routes_voice.py 为**每个 WebSocket 会话**新建一个实例；
+server/routes_voice.py 为**每个 WebSocket 会话**新建一个实例；
 同一实例不要并发调用 `stream_sentences()`。
 """
 # re：清洗模型输出（去 think 块 / XML 标记）与断句都靠预编译正则，模块级编译一次、全程复用
@@ -166,7 +166,7 @@ class LLMChat:
     def stream_sentences(self, user_text: str, rag_context: str = None):
         """流式把 delta 拼成完整句子逐句 yield，每句一个 dict（sentence / ttfs_ms / is_first / is_last）。
 
-        低延迟主链路入口：conversation_manager 在独立线程里跑生产者（有界队列 maxsize=8 做背压），
+        低延迟主链路入口：调用方（engine/dialog/streaming.py）在独立线程里跑生产者（有界队列 maxsize=8 做背压），
         主协程拿到一句就立刻调 TTS。断句用 `_SENTENCE_END_RE` 就近贪心切分（一次 delta 可能带多个
         标点，故内层 while 反复切）；长度 < 2 的碎片丢弃，避免白抖一次 TTS 推理。`ttfs_ms` 只在
         第一句上给真实值。真正的请求发生在被**迭代**时，不迭代等于没调用；只有迭代完整跑完才把整轮
@@ -212,7 +212,7 @@ class LLMChat:
                 sentence = self._clean(buffer[:idx])
                 buffer = buffer[idx:].lstrip()  # 下一句开头；lstrip 去掉标点后常跟的空格/换行
 
-                # 过滤空串和单字符碎片：单标点合成没意义，且下游 conversation_manager 也要求 ≥2 字
+                # 过滤空串和单字符碎片：单标点合成没意义，且下游 pipeline 也要求 ≥2 字
                 if sentence and len(sentence) >= 2:
                     elapsed = (time.perf_counter() - t0) * 1000  # 从请求发出到"可播"的累计耗时
                     yield {

@@ -17,7 +17,7 @@ from .state import State
 log = logging.getLogger("Voice Agent.cm")
 
 
-class AsrAccumulatorMixin:
+class AsrAccumulator:
     """E2E对话 · ASR 文本累积器。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
 
     def _cancel_accum_flush(self):

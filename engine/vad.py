@@ -1,17 +1,25 @@
-"""Silero VAD 薄封装：逐帧语音概率聚合成 speech_start / speech_end 端点事件（链路第一级）。"""
+"""Silero VAD 薄封装（链路第一级）：逐帧给出"这一帧是人声"的概率。
+
+⚠️ 状态机目前**只消费 `speech_prob`**，自己按 `>= 0.6` 判定并计静音帧数（见
+`engine/dialog/manager.py` 的 `_process_chunk`）。本类里的 `speech_start` /
+`speech_end` 事件与 `is_speech_active` 属性目前**没有任何调用方**——它们是更早一版
+"由 VAD 自己判端点"的设计残留，阈值（构造参数 `threshold`，默认 0.5）也只影响这两个
+未被使用的事件，不影响实际判停。判停的真实阈值与帧数在 `engine/dialog/constants.py`。
+"""
 import os
 
 import numpy as np
 import torch
 
 class SileroVAD:
-    """逐帧概率 → 端点事件；**本项目唯一的 VAD 实现**（Silero，模型 snakers4/silero-vad）。"""
+    """逐帧语音概率；**本项目唯一的 VAD 实现**（Silero，模型 snakers4/silero-vad）。"""
 
     def __init__(self, model_dir: str, threshold: float = 0.5):
         """只保存配置，不加载模型。
 
-        threshold 是"这一帧是人声"的判定概率：调高更难触发 speech_start、更容易判停（抗噪但可能
-        切碎句子），调低更灵敏但噪声/TTS 回声易误触发 Barge-in。
+        threshold 只用于下面那套 `speech_start` / `speech_end` 事件的状态机，而那些事件目前
+        无人消费（见模块说明），所以这个参数**不影响实际判停与打断**。真正生效的门限：
+        判停/打断各自在 `engine/dialog/manager.py` 与 `constants.py` 里。
         """
         self.threshold = threshold
         self._model = None
@@ -58,14 +66,15 @@ class SileroVAD:
 
         event = {"speech_prob": prob, "speech_start": False, "speech_end": False}
 
-        # 上升沿：上游据此清空音频缓冲、开始新一轮 Turn 累积，并在 TTS 播放期触发 Barge-in
+        # 上升沿（目前无消费方，见模块说明）
         if prob >= self.threshold and not self._speech_active:
             self._speech_active = True
             self._silence_count = 0
             event["speech_start"] = True
         elif prob < self.threshold and self._speech_active:
             self._silence_count += 1
-            # 15 帧 × 32ms ≈ 480ms 静音才判停：经验值，短于此会把句中换气、停顿切碎
+            # 15 帧 × 32ms ≈ 480ms —— 这套端点事件目前无人消费；实际判停用
+            # constants.py 的 ENDPOINT_*_CHUNKS（13/20 帧），不要混为一谈
             if self._silence_count >= 15:
                 self._speech_active = False
                 self._silence_count = 0

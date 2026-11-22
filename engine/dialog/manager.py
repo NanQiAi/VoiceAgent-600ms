@@ -5,8 +5,12 @@
 ## 状态流转
 ```
 IDLE --VAD检出--> LISTENING --静音达阈值--> THINKING --首句就绪--> SPEAKING --播完--> IDLE
-SPEAKING/THINKING --打断--> INTERRUPTED --静音≥320ms--> THINKING
+SPEAKING --VAD 自动打断--> INTERRUPTED --静音≥320ms--> THINKING
+SPEAKING / THINKING --手动打断(manual_barge_in)--> LISTENING
+THINKING --用户又开口--> 追加进同一轮(_thinking_extra_buffer)，不打断
 ```
+注意两条打断路径去向不同：**VAD 自动打断**进 INTERRUPTED（还要再等一段静音才继续处理），
+**手动打断**（前端空格键/按钮）直接回 LISTENING——按键是明确的"我要说话"，不必再等。
 
 ## 三条主线
 1. **turn 序列号防串音**：所有下行消息带 turn，前端靠 `audio_start` / `barge_in` 对齐 playableTurn。
@@ -21,7 +25,7 @@ SPEAKING/THINKING --打断--> INTERRUPTED --静音≥320ms--> THINKING
 
 ## 代码组织
 本文件只保留**状态机主干**（音频入口、状态分支、打断、生命周期）。按职责拆出的
-功能模块与它**平级**放在 `engine/` 下，`ConversationManager` 通过 Mixin 组合它们 ——
+功能模块与它**平级**放在 `engine/` 下，`ConversationManager` 组合它们 ——
 它们共享 `self` 上的整机会话状态，这样拆分是为了"一个文件读一件事"，不改变行为：
 
 | 模块 | 职责 |
@@ -44,7 +48,7 @@ from typing import Awaitable, Callable, Optional
 
 import numpy as np
 
-from .accumulator import AsrAccumulatorMixin
+from .accumulator import AsrAccumulator
 from .constants import (
     BARGE_IN_CONFIRM_CHUNKS,
     BARGE_IN_RMS_THRESHOLD,
@@ -56,13 +60,13 @@ from .constants import (
     SPECULATIVE_ASR_CHUNKS,
     compute_rms,
 )
-from .endpointing import EndpointingMixin
+from .endpointing import Endpointing
 from .metrics import SessionMetrics
-from .pipeline import PipelineMixin
-from .session import SessionMixin
+from .pipeline import Pipeline
+from .session import Session
 from .state import State
-from .streaming import StreamingMixin
-from .transport import TransportMixin
+from .streaming import Streaming
+from .transport import Transport
 
 # 日志命名空间与 ws_server/tts/filler 等统一成 "Voice Agent.*"，
 # 便于一条命令过滤整条链路：grep "Voice Agent" logs/voice_agent.log
@@ -70,23 +74,23 @@ log = logging.getLogger("Voice Agent.cm")
 
 
 class ConversationManager(
-    SessionMixin,        # 问候 / 空闲超时 / PTT / 文本输入
-    PipelineMixin,       # ASR → RAG → LLM → TTS 编排
-    StreamingMixin,      # LLM 句子 → TTS 音频流
-    TransportMixin,      # 下行发送
-    EndpointingMixin,    # 判停
-    AsrAccumulatorMixin, # ASR 文本累积
+    Session,        # 问候 / 空闲超时 / PTT / 文本输入
+    Pipeline,       # ASR → RAG → LLM → TTS 编排
+    Streaming,      # LLM 句子 → TTS 音频流
+    Transport,      # 下行发送
+    Endpointing,    # 判停
+    AsrAccumulator, # ASR 文本累积
 ):
     """单个语音会话的对话状态机：吃 32ms 音频帧，吐协议消息与 TTS 音频。
 
     生命周期由 ws_server.ws_voice() 控制（建连时构造，断开时 shutdown()）。除 _produce_sentences
     跑在线程池的同步函数外，所有方法都必须在构造它的事件循环里调用，因此内部字段无需加锁。
 
-    上面列出的 Mixin 各管一类职责（见模块文档的表格），都操作同一份 `self` 状态。
+    上面列出的 6 个基类各管一类职责（见模块文档的表格），都操作同一份 `self` 状态。
     """
 
     # 单条 TTS 音频的硬上限：30s @24kHz 16-bit。生成退化时一块可能巨大、会撑爆前端缓冲；
-    # 截断比丢弃安全（丢块会造成爆破音）。transport 与 streaming 两个 Mixin 共用这个值。
+    # 截断比丢弃安全（丢块会造成爆破音）。transport 与 streaming 两个基类共用这个值。
     MAX_TTS_AUDIO_BYTES = 24000 * 2 * 30
 
     def __init__(self, asr, llm, tts, rag, vad, filler, send_fn: Callable[..., Awaitable],
@@ -242,7 +246,9 @@ class ConversationManager(
         """
         vad_result = self.vad.process_chunk(chunk, SAMPLE_RATE)
         speech_prob = vad_result["speech_prob"]
-        # 普通判停用的语音判定门限固定 0.6（打断用另一个更严的常量）
+        # 普通判停的语音门限：**硬编码 0.6**，不是从 SileroVAD 的 threshold 来的
+        # （那个参数只喂给 VAD 内部无人消费的端点事件，见 engine/vad.py 模块说明）。
+        # 打断另有 BARGE_IN_VAD_THRESHOLD（同为 0.6）+ RMS 双门限 + 2 帧确认。
         is_speech = speech_prob >= 0.6
         rms = compute_rms(chunk)
 

@@ -116,7 +116,7 @@ _run_pipeline()
 | TTS 首段（Kokoro） | 未单独实测 | `engine/tts.py` |
 | **合计** | **~458ms** | |
 
-> 指标**不含** VAD 判停等待（256~640ms）——那是用户说完话到系统开始处理之间的静默。
+> 指标**不含** VAD 判停等待（**416~640ms**）——那是用户说完话到系统开始处理之间的静默。
 
 **六个让它变快的工程手段**：
 
@@ -198,7 +198,11 @@ server/
 ### 4.1 VAD（Voice Activity Detection）
 
 `engine/vad.py`，Silero，**跑 CPU**（`torch.jit.load(..., map_location="cpu")`）。
-每帧 32ms 判一次"是人声的概率"，阈值 0.5。
+每帧 32ms 输出一次"是人声的概率"。
+
+> ⚠️ **真正生效的门限是 0.6**（硬编码在 `engine/dialog/manager.py` 的 `_process_chunk`）。
+> `SileroVAD(threshold=0.5)` 这个构造参数**不影响判停/打断**——它只驱动 VAD 内部那套
+> `speech_start` / `speech_end` 事件，而那些事件目前没有调用方。详见 `engine/vad.py` 模块说明。
 
 ### 4.2 判停（Endpointing）
 
@@ -218,7 +222,7 @@ server/
 **触发条件**（`engine/dialog/constants.py`，双门限 + 连续确认）：
 
 ```python
-BARGE_IN_VAD_THRESHOLD = 0.6    # VAD 语音概率（比判停的 0.5 更严，对抗 TTS 回声）
+BARGE_IN_VAD_THRESHOLD = 0.6    # VAD 语音概率（与判停同为 0.6；更严的是下面的 RMS + 2 帧确认）
 BARGE_IN_RMS_THRESHOLD = 0.012  # 真实能量（语音概率会被回声/键盘声骗过）
 BARGE_IN_CONFIRM_CHUNKS = 2     # 连续 2 帧（≈64ms）才真打断，挡单帧毛刺
 ```
@@ -263,10 +267,15 @@ VAD 误切或用户只说"嗯/那个"时，立刻送 LLM 既浪费一轮 turn �
 ### 4.9 5 个状态
 
 ```
-IDLE ──语音──> LISTENING ──判停──> THINKING ──首段音频──> SPEAKING
-  ↑                  ↑                                        │
-  └──结束/空闲────── └────────── 打断 (INTERRUPTED) ──────────┘
+IDLE ──VAD检出──> LISTENING ──静音达阈值──> THINKING ──首句就绪──> SPEAKING ──播完──> IDLE
+                                            ↑                      │
+                                            └──静音≥320ms── INTERRUPTED ←──VAD 自动打断──┘
+SPEAKING / THINKING ──手动打断(空格键/按钮)──> LISTENING
+THINKING ──用户又开口──> 追加进同一轮，不打断
 ```
+
+两条打断路径去向不同：**VAD 自动打断**进 `INTERRUPTED`（需再静音 320ms 才继续处理后面的半句），
+**手动打断**直接回 `LISTENING`——按键是明确的"我要说话"，不必再等。
 
 状态通过 `{"type":"state","state":"..."}` 下发，前端显示状态灯。定义在 `engine/dialog/state.py`。
 
@@ -942,7 +951,7 @@ server/routes_voice.py  ws_voice()      ← 连接生命周期、消息分发
 | **投机 ASR** | 判停前提前跑 ASR，判停后复用结果 |
 | **Filler** | 思考期先播的语气词（`Well,` / `Sure,`），盖住空档 |
 | **D1~D4** | 体验层需求编号：D1 问候 / D2 空闲超时 / D3 错误恢复 / D4 告别识别 |
-| **Mixin** | `ConversationManager` 用多继承组合 9 个职责模块，共享同一份 `self` 状态 |
+| **多继承组合** | `ConversationManager` 由 6 个职责基类（`Session` / `Pipeline` / `Streaming` / `Transport` / `Endpointing` / `AsrAccumulator`）组合而成，共享同一份 `self` 状态 |
 
 ---
 

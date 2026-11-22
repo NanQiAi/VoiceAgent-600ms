@@ -184,7 +184,7 @@ class KokoroTTS:
     def synthesize_stream(self, text: str):
         """流式合成：边生成边 yield，每个音频段一个 dict（audio / chunk_idx / ttfa_ms）。
 
-        "160ms 精确打断"落在调用方：conversation_manager 每拿到一段就立即下发裸 PCM，
+        "160ms 精确打断"落在调用方：engine/dialog/streaming.py 每拿到一段就立即下发裸 PCM，
         并在**每段之前**检查取消标志，用户一开口就 break。所以打断粒度 = 一个音频段的
         播放时长（Kokoro 按句切段，通常 1~3s，比旧版 VoxCPM 的块更粗）。
         本函数是**生成器**：不迭代就不会跑推理。

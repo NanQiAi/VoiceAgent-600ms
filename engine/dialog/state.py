@@ -1,7 +1,7 @@
 """对话状态机的 5 个状态。
 
 取值即下行协议 `{"type":"state","state":...}` 里的字符串，前端用它切指示灯。
-状态流转见 `conversation_manager` 模块头部说明。
+状态流转见 `engine/dialog/manager.py` 模块头部说明。
 """
 
 from enum import Enum

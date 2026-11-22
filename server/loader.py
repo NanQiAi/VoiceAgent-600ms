@@ -49,7 +49,8 @@ def load_engines():
 
     log.info("=== Loading engines (v%s) ===", VERSION)
 
-    # ── VAD：只有 Silero 一种实现；阈值 0.5 须与 conversation_manager 里 0.6 的判语音阈值配套 ──
+    # ── VAD：只有 Silero 一种实现。这里的 threshold=0.5 只影响 VAD 内部那套
+    #    无人消费的端点事件；真正生效的判停门限 0.6 硬编码在 engine/dialog/manager.py ──
     log.info("Loading VAD (Silero)...")
     reg["vad_type"] = "silero"
     # 模板/预热实例，不会被任何会话直接使用：VAD 内部有流式状态，不能跨会话共享。
@@ -57,7 +58,7 @@ def load_engines():
     reg["vad_template"].load()
 
     # ── 投机 ASR：判停前静音到 ~160ms 就先跑一遍，判停后音频没变长就直接复用结果 ──
-    # 只保留主 ASR 一条路径（无 Moonshine 可选引擎），由 conversation_manager 内部直接复用 asr。
+    # 只保留主 ASR 一条路径（无可选投机引擎），由 engine/dialog/manager.py 内部直接复用 asr。
     reg["spec_asr"] = None
 
     # ── ASR：只有 Parakeet-TDT 一种实现 ──
@@ -76,7 +77,8 @@ def load_engines():
     if os.path.exists(KB_DATA_PATH):
         with open(KB_DATA_PATH, "r", encoding="utf-8") as f:
             docs = json.load(f)
-        # build_index 做一次批量向量化（启动期成本，换运行时 4ms 级检索）。
+        # build_index 做一次批量向量化（59 条约 2s 启动成本），换运行时单次检索约 40ms
+        # （其中 embedding 占绝大部分，FAISS search 仅 0.1ms）。
         info = rag.build_index(docs)
         log.info("RAG index: %d docs, dim=%d", info["num_docs"], info["dim"])
     reg["rag"] = rag
