@@ -20,7 +20,7 @@ FILLER_TEXTS = ["Well,", "Sure,", "Okay,", "Right,", "So,"]
 MAX_FILLER_SEC = 2.0
 
 
-class FillerEngine:
+class Filler:
     """语气词引擎：启动时预合成、运行时轮询取用（纯内存操作，不阻塞事件循环）。"""
 
     def __init__(self, tts_engine):

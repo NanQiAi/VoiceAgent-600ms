@@ -43,7 +43,7 @@ def load_engines():
     from engine.llm import LLMChat
     from engine.tts import KokoroTTS
     from engine.rag import RAGEngine
-    from engine.filler import FillerEngine
+    from engine.filler import Filler
 
     reg = runtime.engine
 
@@ -111,7 +111,7 @@ def load_engines():
 
     # ── filler：把几条语气词预合成成裸 PCM，填补 THINKING 阶段的听感空档 ──
     log.info("Pre-generating filler words...")
-    filler = FillerEngine(tts)
+    filler = Filler(tts)
     filler.pregenerate()
     reg["filler"] = filler
 
