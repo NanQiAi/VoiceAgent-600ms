@@ -48,7 +48,7 @@ async def api_info():
         # 版本号唯一来源是 config.VERSION（日志 / ready 消息 / 这里都用它）
         "version": VERSION,
         "models": {
-            "asr": {"name": "SenseVoiceSmall", "framework": "FunASR"},
+            "asr": {"name": "Parakeet-TDT-0.6B", "framework": "transformers"},
             "llm": {"name": LLM_MODEL_NAME, "endpoint": LLM_BASE_URL,
                     "streaming": True},
             # 采样率与音色都直接取 TTS 引擎的常量，避免两处各写一份。

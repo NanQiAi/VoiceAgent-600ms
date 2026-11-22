@@ -159,7 +159,6 @@ export MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-$VA_REPO_DIR/models}"  # 权重统�
 # Kokoro 的权重就落在这儿（默认 ~/.cache/huggingface 可能只读或不可控）。
 export HF_HOME="${HF_HOME:-$VA_REPO_DIR/models/.hf}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"                        # 只用本地权重，不联网
-export FUNASR_DISABLE_UPDATE="${FUNASR_DISABLE_UPDATE:-1}"          # 关掉 FunASR 更新检查
 
 
 # ============================================================================
@@ -433,7 +432,7 @@ va_preflight() {
     # --- Python 包：按"缺了就直接起不来"排序 ---
     local pair module
     for pair in "torch:torch" "numpy:numpy" \
-                "funasr:funasr" "soundfile:soundfile" \
+                "transformers:transformers" \
                 "sentence_transformers:sentence-transformers" "faiss:faiss-cpu" \
                 "kokoro:kokoro" "misaki:misaki[en]" \
                 "fastapi:fastapi" "uvicorn:uvicorn" "starlette:starlette" \
@@ -445,9 +444,26 @@ va_preflight() {
     done
 
     # --- 模型权重 ---
-    [ -d "$VA_CFG_ASR_DIR" ] \
-        && va_log "  ✓ ASR 权重 ${VA_CFG_ASR_DIR#$VA_REPO_DIR/}" \
-        || { va_warn "  ✗ ASR 权重缺失: $VA_CFG_ASR_DIR"; fatal=1; }
+    # ASR 目录必须**有实际权重**才算就位：只检查目录会在"下了一半"时误判通过，
+    # 服务起来后才在加载阶段炸（Parakeet 需要 model.safetensors + config.json + tokenizer.json）。
+    local asr_missing=""
+    [ -f "$VA_CFG_ASR_DIR/config.json" ] || asr_missing="$asr_missing config.json"
+    [ -f "$VA_CFG_ASR_DIR/tokenizer.json" ] || asr_missing="$asr_missing tokenizer.json"
+    compgen -G "$VA_CFG_ASR_DIR/*.safetensors" >/dev/null || asr_missing="$asr_missing model.safetensors"
+    # 权重被截断时文件存在但内容不对，用大小兜底（Parakeet-TDT-0.6B 约 2.5GB）
+    local asr_bytes
+    asr_bytes=$(du -sb "$VA_CFG_ASR_DIR" 2>/dev/null | cut -f1)
+    if [ -n "$asr_bytes" ] && [ "$asr_bytes" -lt 1000000000 ]; then
+        asr_missing="$asr_missing 权重体积不足($((asr_bytes/1048576))MB<1GB)"
+    fi
+    if [ -z "$asr_missing" ]; then
+        va_log "  ✓ ASR 权重 ${VA_CFG_ASR_DIR#$VA_REPO_DIR/}"
+    else
+        va_warn "  ✗ ASR 权重目录不完整: $VA_CFG_ASR_DIR（缺$asr_missing）"
+        va_warn "      获取： huggingface-cli download nvidia/parakeet-tdt-0.6b-v3 \\"
+        va_warn "              --local-dir ${VA_CFG_ASR_DIR#$VA_REPO_DIR/}"
+        fatal=1
+    fi
     [ -d "$VA_CFG_EMBED_DIR" ] \
         && va_log "  ✓ RAG 权重 ${VA_CFG_EMBED_DIR#$VA_REPO_DIR/}" \
         || { va_warn "  ✗ RAG 权重缺失: $VA_CFG_EMBED_DIR"; fatal=1; }
@@ -756,11 +772,26 @@ va_do_status() {
             "$(pgrep -f "ssh .*-R ${VOICE_PORT}.*${VPS_IP}" >/dev/null && echo 运行中 || echo 未运行)"
     fi
     echo "──────────────────────────────────────────────"
-    local ver
-    ver="$(va_cfg VERSION 2>/dev/null || true)"
-    printf "  %-22s %s\n" "版本" "v${ver:-未知}（config.VERSION）"
+    # 一次性读出所有要展示的配置（只起一个 python 进程，避免 status 卡顿）
+    local _info
+    _info="$("$PYTHON" -c "
+import os, sys
+sys.path.insert(0, '$VA_REPO_DIR')
+import config
+print(config.VERSION)
+print(os.path.basename(config.ASR_MODEL_DIR))
+print(os.path.basename(config.EMBED_MODEL_DIR))
+print(config.LLM_MODEL_NAME)
+" 2>/dev/null || true)"
+    local ver asr_m embed_m llm_m
+    ver="$(printf '%s\n' "$_info" | sed -n 1p)"
+    asr_m="$(printf '%s\n' "$_info" | sed -n 2p)"
+    embed_m="$(printf '%s\n' "$_info" | sed -n 3p)"
+    llm_m="$(printf '%s\n' "$_info" | sed -n 4p)"
+    printf "  %-22s %s\n" "版本" "v${ver:-未知}"
+    printf "  %-22s %s\n" "模型" "ASR=${asr_m:-?}  EMBED=${embed_m:-?}"
     printf "  %-22s %s\n" "配置" "GPU_VOICE=$GPU_VOICE  RAG_DEVICE=$RAG_DEVICE"
-    printf "  %-22s %s\n" "" "LLM $("$PYTHON" -c "import sys;sys.path.insert(0,'$VA_REPO_DIR');import config;print(config.LLM_MODEL_NAME)" 2>/dev/null || echo deepseek-flash)（DeepSeek 云端）"
+    printf "  %-22s %s\n" "" "LLM ${llm_m:-deepseek-flash}（DeepSeek 云端）"
     echo "──────────────────────────────────────────────"
     # 只有真能取到数据才打印 GPU 段：驱动异常时 nvidia-smi 会把错误文本写到 **stdout**，
     # 直接透传会显示成一堆乱入的 "NVIDIA-SMI has failed..."，比不显示更误导。

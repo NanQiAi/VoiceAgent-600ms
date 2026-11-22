@@ -15,7 +15,7 @@
     └── dialog/                                             ② 对话状态机
 
 ① 可替换引擎
-    asr.py      SenseVoice ASR（FunASR）
+    asr.py      Parakeet-TDT ASR（transformers）
     llm.py      DeepSeek / 本地 vLLM 客户端 + 流式切句 + 历史管理
     rag.py      bge 向量化 + FAISS 检索 + 置信度阈值
     tts.py      Kokoro TTS（24kHz）

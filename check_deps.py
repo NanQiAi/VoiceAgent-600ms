@@ -18,14 +18,9 @@ REQUIRED = [
     # 推理底座
     ("torch", "推理底座"),
     ("numpy", "数值计算"),
-    # ASR（SenseVoice / FunASR）
-    ("funasr", "ASR 引擎"),
-    ("modelscope", "ASR 权重定位"),
-    ("sentencepiece", "分词（funasr 传递）"),
-    ("kaldiio", "kaldi 特征（funasr 传递）"),
-    ("soundfile", "音频 IO（funasr 传递）"),
-    ("scipy", "信号处理（funasr 传递）"),
-    ("librosa", "特征提取（funasr 传递）"),
+    # ASR（Parakeet-TDT / transformers）
+    ("transformers", "ASR 引擎（ParakeetForTDT）"),
+    ("modelscope", "权重下载（models/download_model.py）"),
     # RAG
     ("sentence_transformers", "RAG 向量化"),
     ("faiss", "RAG 检索"),

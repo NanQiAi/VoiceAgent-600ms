@@ -344,7 +344,7 @@ class ConversationManager(
     def _launch_speculative_asr(self):
         """在判停前用当前音频快照跑一次 ASR（fire-and-forget），结果缓存供 pipeline 复用。
 
-        用主 ASR（SenseVoice）在判停前先跑一遍。副作用：concat 一份音频快照
+        用主 ASR（Parakeet-TDT）在判停前先跑一遍。副作用：concat 一份音频快照
         （额外一次内存拷贝），起后台任务 spec-asr-{turn}（线程池跑阻塞转写），句柄写进 `_spec_asr_task`、
         快照长度写进 `_spec_asr_audio_len`。不 await，不阻塞音频帧处理。
         """
@@ -365,7 +365,7 @@ class ConversationManager(
                 self._spec_asr_result = None
 
         self._spec_asr_task = self._track_task(_run(), name=f"spec-asr-{self._turn}")
-        engine_name = "SenseVoice"
+        engine_name = "Parakeet-TDT"
         log.debug("Speculative ASR (%s) launched on %d samples", engine_name, len(audio_snapshot))
 
     def _cancel_speculative_asr(self):

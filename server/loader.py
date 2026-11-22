@@ -39,7 +39,7 @@ def load_engines():
     （启动期快速失败优于"带残缺引擎服务"）。函数内的 import 都是延迟导入。
     """
     from engine.vad import SileroVAD
-    from engine.asr import SenseVoiceASR
+    from engine.asr import ParakeetASR
     from engine.llm import LLMChat
     from engine.tts import KokoroTTS
     from engine.rag import RAGEngine
@@ -60,9 +60,9 @@ def load_engines():
     # 只保留主 ASR 一条路径（无 Moonshine 可选引擎），由 conversation_manager 内部直接复用 asr。
     reg["spec_asr"] = None
 
-    # ── ASR：只有 SenseVoice 一种实现 ──
-    log.info("Loading ASR (SenseVoice)...")
-    reg["asr"] = SenseVoiceASR(ASR_MODEL_DIR, device=ASR_DEVICE)
+    # ── ASR：只有 Parakeet-TDT 一种实现 ──
+    log.info("Loading ASR (Parakeet-TDT)...")
+    reg["asr"] = ParakeetASR(ASR_MODEL_DIR, device=ASR_DEVICE)
     reg["asr"].load()
 
     # ── RAG：向量化 + FAISS 索引 ──

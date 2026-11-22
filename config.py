@@ -62,8 +62,11 @@ MODEL_DIR = os.path.join(BASE_DIR, "models")
 # ═══════════════════════════════════════════════════════════════════════
 # 2. 各引擎权重目录与 TTS 参数
 # ═══════════════════════════════════════════════════════════════════════
-# SenseVoiceSmall（FunASR）—— 本项目唯一的 ASR 实现
-ASR_MODEL_DIR = os.path.join(MODEL_DIR, "SenseVoiceSmall")
+# Parakeet-TDT-0.6B（NVIDIA）—— 本项目唯一的 ASR 实现。
+# 用 transformers 原生实现加载（ParakeetForTDT），**不需要 NeMo**；
+# 仓库里要有 model.safetensors + config.json + tokenizer.json + processor_config.json。
+# English 平均 WER ≈ 6%，0.6B 参数，24GB 卡余量充足。
+ASR_MODEL_DIR = os.path.join(MODEL_DIR, "parakeet-tdt-0.6b-v3")
 # Silero VAD —— 唯一的 VAD 模型（snakers4/silero-vad），固定 threshold=0.5
 VAD_MODEL_DIR = os.path.join(MODEL_DIR, "snakers4_silero-vad")
 # bge-m3：约 568M 参数 / **1024 维** / 15-20ms per query，多语言、召回更强。

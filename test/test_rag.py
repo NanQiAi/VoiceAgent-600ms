@@ -1,21 +1,23 @@
-"""RAG AB Test: bge-small-zh-v1.5 vs bge-m3, with/without reranker.
-Usage: python test/test_rag.py
+"""RAG 检索离线基准：bge-m3（可选再加 reranker）。
 
-RAG 检索环节的离线 A/B 脚本（对应 engine/rag.py）：在同一份知识库与同一批 10 个问句上，
-横向比较 4 种组合，输出加载/编码/检索/重排延迟与 top-1 命中，用来回答
-“多花 15-20ms 换 bge-m3 值不值、再加 reranker 会不会超出 600ms 预算”。
+用法：python test/test_rag.py
+      RAG_DEVICE=cpu python test/test_rag.py     # 无卡机器也能跑
 
-对比的组合（缺模型目录则自动跳过，见 main()）：
-  1. bge-small-zh-v1.5（24M / 512 维 / 3-5ms）——最快，作为对照基准（线上已换 bge-m3）
-  2. bge-small-zh-v1.5 + bge-reranker-v2-m3（fp16 重排 top-5，10-15ms）
-  3. bge-m3（568M / 1024 维 / 15-20ms）——质量最好但更慢
-  4. bge-m3 + bge-reranker-v2-m3
-⚠️ 本脚本用 RAGEngine 默认 score_threshold=0.0（不过滤），看的是“检索上限”；
-线上 ws_server 传 config.RAG_SCORE_THRESHOLD=0.35，会丢掉低分结果。
+对应 engine/rag.py 的检索环节：在同一份知识库、同一批问句上比较
+「只用 bge-m3」与「bge-m3 + bge-reranker-v2-m3」两种组合，输出
+加载 / 编码 / 检索 / 重排延迟与 top-1 命中，用来回答
+"多花十几毫秒加 reranker 值不值、会不会超出 600ms 首响预算"。
 
-指标：延迟取 rag.query() 返回的 embed/search/rerank/total 四项，对 10 条问句求
+⚠️ 本脚本用 RAGEngine 默认 score_threshold=0.0（不过滤），看的是"检索上限"；
+线上 server/loader.py 传 config.RAG_SCORE_THRESHOLD=0.35，会丢掉低分结果。
+若想看阈值后的效果，把 benchmark_config 里的 score_threshold 传进来即可。
+
+指标：延迟取 rag.query() 返回的 embed/search/rerank/total 四项，对全部问句求
 avg/p50/min/max；跑前先 warmup 以免首调 CUDA 初始化污染统计；模型加载耗时单独统计。
 质量只打印 top-1 的 question 与 score 供人工核对——没有标注答案，故不算 Recall/MRR/nDCG。
+
+历史：本脚本原先还对比 bge-small-zh-v1.5（512 维），但该权重已从仓库移除，
+那一组会自动跳过；问句原先也是中文，知识库译成英文后一并改成英文。
 """
 import json
 import os
@@ -29,6 +31,9 @@ import numpy as np
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
+# 线上实际使用的阈值，仅用于对比（本脚本自身用 0.0 = 不过滤）
+from config import RAG_SCORE_THRESHOLD as ONLINE_THRESHOLD  # noqa: E402
+
 MODEL_DIR = os.path.join(REPO_ROOT, "models")
 # 与线上 config.KB_DATA_PATH 指向同一份数据
 DATA_PATH = os.path.join(REPO_ROOT, "data", "sample_kb.json")
@@ -36,27 +41,39 @@ DATA_PATH = os.path.join(REPO_ROOT, "data", "sample_kb.json")
 # 可用 RAG_DEVICE=cpu 做无卡冒烟测试
 DEVICE = os.environ.get("RAG_DEVICE", "cuda:0")
 
-BGE_SMALL_DIR = os.path.join(MODEL_DIR, "bge-small-zh-v1.5")
 BGE_M3_DIR = os.path.join(MODEL_DIR, "bge-m3")
-# bge-m3 的另一种落盘布局（ModelScope / HF 缓存风格），main() 里与 BGE_M3_DIR 二选一
+# bge-m3 的另一种落盘布局（ModelScope / HF 缓存风格），与 BGE_M3_DIR 二选一
 BGE_M3_MS_DIR = os.path.join(MODEL_DIR, "BAAI", "bge-m3")
-# 只有它存在才会跑“带 reranker”的两组
+# 只有它存在才会额外跑"带 reranker"的一组（权重不在仓库，默认跳过）
 RERANKER_DIR = os.path.join(MODEL_DIR, "bge-reranker-v2-m3")
 
-# 固定问句：覆盖价格/客服/语种/数据安全/并发/声音定制/试用/退款/地域等意图，
-# 也刻意包含“支持马来语吗”“你们在哪个城市”这类知识库可能没有的问题
-TEST_QUERIES = [
-    "你们的价格是多少",
-    "怎么联系客服",
-    "支持马来语吗",
-    "AI可以处理什么问题",
-    "数据安全怎么保障",
-    "能同时接多少电话",
-    "声音可以自定义吗",
-    "怎么开始试用",
-    "退款怎么办",
-    "你们在哪个城市",
+# 候选 embedding 模型：显示名 → 可能的落盘路径（按顺序取第一个存在的）。
+# 想把别的模型拉进来对比，往这里加一项即可，main() 会自动跑。
+EMBED_CANDIDATES = [
+    ("bge-m3", [BGE_M3_DIR, BGE_M3_MS_DIR]),
 ]
+
+# 固定问句：**英文**，与 data/sample_kb.json（英文面壁智能 FAQ）同语种。
+# 分两组是为了能自动算"正例最低分 vs 负例最高分"的间隔，从而判断
+# config.RAG_SCORE_THRESHOLD 定得合不合适（理想情况：正例最低分 > 阈值 > 负例最高分）。
+POSITIVE_QUERIES = [
+    "What is MiniCPM?",
+    "When was the company founded?",
+    "Do you support private deployment?",
+    "How can I get your open-source models?",
+    "How do you protect customer data?",
+    "Can your models run on a phone?",
+    "How is API usage priced?",
+    "Do you offer internships for university students?",
+]
+
+# 负例：知识库里**没有**对应条目，检索不该硬凑答案。
+NEGATIVE_QUERIES = [
+    "Can I get a refund for my subscription?",
+    "Do you support Malay?",
+]
+
+TEST_QUERIES = POSITIVE_QUERIES + NEGATIVE_QUERIES
 
 
 def load_docs():
@@ -79,7 +96,7 @@ def benchmark_config(name, embed_dir, reranker_dir, docs, queries, device):
 
     # 模型加载（读盘 + 上显存）是一次性冷启动成本，不计入单次检索延迟
     t0 = time.perf_counter()
-    # top_k / rerank_top_k 与线上 config.RAG_TOP_K 及 ws_server 用法一致；
+    # top_k / rerank_top_k 与线上 config.RAG_TOP_K 及 server/loader.py 用法一致；
     # 不传 score_threshold → 用默认 0.0 = 不过滤，以便看到完整检索结果
     rag = RAGEngine(
         embed_model_dir=embed_dir,
@@ -99,7 +116,7 @@ def benchmark_config(name, embed_dir, reranker_dir, docs, queries, device):
     print(f"  Per-doc encode: {build['encode_per_doc_ms']:.1f}ms")
 
     # 首次 encode 会触发 CUDA kernel 编译/显存分配，不预热会把第一条问句的延迟拉高
-    rag.query("测试查询")
+    rag.query("warmup query")
 
     latencies = {"embed": [], "search": [], "rerank": [], "total": []}
     results_log = []
@@ -123,16 +140,33 @@ def benchmark_config(name, embed_dir, reranker_dir, docs, queries, device):
 
     print(f"\n  Latency ({len(queries)} queries):")
     for k, v in latencies.items():
-        # 样本只有 10 条，p50 即中位数
+        # 样本量小，p50 即中位数
         arr = np.array(v)
         print(f"    {k:>8s}: avg={arr.mean():.1f}ms  p50={np.median(arr):.1f}ms  "
               f"min={arr.min():.1f}ms  max={arr.max():.1f}ms")
 
-    # 无 ground truth，只做人工核对；只打前 5 条避免刷屏
-    print(f"\n  Retrieval quality (top-1):")
-    for r in results_log[:5]:
-        print(f"    Q: {r['query']}")
-        print(f"    → {r['top1_q']} (score={r['score']:.3f})")
+    # 无 ground truth，只做人工核对；打印全部问句，负例用 [neg] 标出
+    neg_set = set(NEGATIVE_QUERIES)
+    print(f"\n  Retrieval quality (top-1, {len(results_log)} queries):")
+    for r in results_log:
+        tag = "[neg]" if r["query"] in neg_set else "     "
+        print(f"    {tag} [{r['score']:.3f}] {r['query']}")
+        print(f"              → {r['top1_q'] or '(无结果)'}")
+
+    # 正负例分数间隔 —— 直接决定阈值该怎么定
+    pos_scores = [r["score"] for r in results_log if r["query"] not in neg_set]
+    neg_scores = [r["score"] for r in results_log if r["query"] in neg_set]
+    if pos_scores and neg_scores:
+        print(f"\n  Threshold analysis (线上 config.RAG_SCORE_THRESHOLD = {ONLINE_THRESHOLD}):")
+        print(f"    正例最低分 = {min(pos_scores):.3f}")
+        print(f"    负例最高分 = {max(neg_scores):.3f}")
+        if min(pos_scores) > max(neg_scores):
+            print(f"    → 可用阈值区间 ({max(neg_scores):.3f}, {min(pos_scores):.3f})；"
+                  f"线上 {ONLINE_THRESHOLD} "
+                  f"{'落在区间内 ✅' if max(neg_scores) < ONLINE_THRESHOLD < min(pos_scores) else '⚠️ 不在区间内'}")
+        else:
+            print(f"    → 正负例分数**重叠**（{max(neg_scores):.3f} ≥ {min(pos_scores):.3f}），"
+                  f"单靠阈值无法完全分开；负例仍会被放行")
 
     # avg_total_ms 是选型最关键的指标（直接叠加进首响预算）
     return {
@@ -145,10 +179,10 @@ def benchmark_config(name, embed_dir, reranker_dir, docs, queries, device):
 
 
 def main():
-    """入口：按“模型目录是否存在”逐个跑 4 种组合，最后打印 SUMMARY 横向对比表。
+    """入口：对每个存在的 embedding 模型跑"无/有 reranker"两组，最后打印 SUMMARY。
 
-    执行顺序 bge-small（无/有 reranker）→ bge-m3（无/有 reranker）；目录缺失的组合被 SKIP
-    而非报错，因此只有小模型的机器也能单独跑基线。不写任何文件。
+    目录缺失的组合被 SKIP 而非报错，因此只有 bge-m3 的机器（也就是当前仓库）
+    会跑 1~2 组，不会因为缺权重而失败。不写任何文件。
     """
     docs = load_docs()
     print(f"Loaded {len(docs)} documents")
@@ -156,41 +190,24 @@ def main():
 
     results = []
 
-    if os.path.isdir(BGE_SMALL_DIR):
+    for name, candidates in EMBED_CANDIDATES:
+        embed_dir = next((d for d in candidates if os.path.isdir(d)), None)
+        if not embed_dir:
+            print(f"SKIP: {name} not found at {candidates}")
+            continue
+
         # 先跑不带 reranker 的基线，便于单一变量对比 reranker 的收益
-        r = benchmark_config(
-            "bge-small-zh-v1.5 (no reranker)",
-            BGE_SMALL_DIR, None, docs, TEST_QUERIES, DEVICE
-        )
-        results.append(r)
+        results.append(benchmark_config(
+            f"{name} (no reranker)", embed_dir, None, docs, TEST_QUERIES, DEVICE
+        ))
 
+        # 有 reranker 权重才跑第二组：理论上质量最高、延迟也最高，最可能突破 600ms 预算
         if os.path.isdir(RERANKER_DIR):
-            r = benchmark_config(
-                "bge-small-zh-v1.5 + reranker-v2-m3",
-                BGE_SMALL_DIR, RERANKER_DIR, docs, TEST_QUERIES, DEVICE
-            )
-            results.append(r)
-    else:
-        print(f"SKIP: {BGE_SMALL_DIR} not found")
-
-    # bge-m3 两种落盘布局二选一；都不存在则跳过全部 m3 组合
-    m3_dir = BGE_M3_DIR if os.path.isdir(BGE_M3_DIR) else BGE_M3_MS_DIR
-    if os.path.isdir(m3_dir):
-        r = benchmark_config(
-            "bge-m3 (no reranker)",
-            m3_dir, None, docs, TEST_QUERIES, DEVICE
-        )
-        results.append(r)
-
-        # 理论上质量最高、延迟也最高，最可能突破 600ms 预算
-        if os.path.isdir(RERANKER_DIR):
-            r = benchmark_config(
-                "bge-m3 + reranker-v2-m3",
-                m3_dir, RERANKER_DIR, docs, TEST_QUERIES, DEVICE
-            )
-            results.append(r)
-    else:
-        print(f"SKIP: bge-m3 not found at {BGE_M3_DIR} or {BGE_M3_MS_DIR}")
+            results.append(benchmark_config(
+                f"{name} + reranker-v2-m3", embed_dir, RERANKER_DIR, docs, TEST_QUERIES, DEVICE
+            ))
+        else:
+            print(f"SKIP: {RERANKER_DIR} not found（跳过带 reranker 的一组）")
 
     print(f"\n{'='*60}")
     print("SUMMARY")
@@ -198,7 +215,7 @@ def main():
     print(f"{'Config':<40s} {'Load':>8s} {'Embed':>8s} {'Rerank':>8s} {'Total':>8s}")
     print("-" * 72)
     for r in results:
-        # Load 为一次性冷启动；Embed/Rerank/Total 为 10 条问句的平均值（ms）
+        # Load 为一次性冷启动；Embed/Rerank/Total 为全部问句的平均值（ms）
         print(f"{r['name']:<40s} {r['load_ms']:>7.0f}ms {r['avg_embed_ms']:>6.1f}ms "
               f"{r['avg_rerank_ms']:>6.1f}ms {r['avg_total_ms']:>6.1f}ms")
 

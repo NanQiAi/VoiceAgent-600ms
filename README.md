@@ -61,7 +61,7 @@ VAD → ASR → RAG → LLM → TTS
 | 组件 | 当前实现 | 可替换为 |
 |---|---|---|
 | VAD | **Silero**（CPU） | FireRedVAD · WebRTC VAD |
-| ASR | **SenseVoiceSmall**（FunASR） | Whisper · Paraformer · FireRedASR2 |
+| ASR | **Parakeet-TDT-0.6B**（NVIDIA，经 transformers） | Whisper · SenseVoice · Paraformer |
 | RAG | **bge-m3（1024 维）+ FAISS** | bge-small-zh-v1.5 · Milvus · Elasticsearch |
 | LLM | **DeepSeek 云端**（`deepseek-flash`） | 任何 OpenAI 兼容服务（改 `LLM_BASE_URL` 即可） |
 | TTS | **Kokoro-82M**（24000Hz） | VoxCPM · CosyVoice · IndexTTS · Fish-Speech |
@@ -98,7 +98,7 @@ VAD → ASR → RAG → LLM → TTS
    │ 判停后
    ▼
 _run_pipeline()
-   ├─ ASR.transcribe()        SenseVoice，~200ms
+   ├─ ASR.transcribe()        Parakeet-TDT，~180ms（CPU 实测 3.7s 音频）
    ├─ RAG.get_context()       bge + FAISS，~4ms（命中才注入）
    └─ _stream_llm_tts()       LLM 逐句 → TTS 逐段
         ├─ LLMChat.stream_sentences()   DeepSeek 流式，首 token ~163ms
@@ -110,7 +110,7 @@ _run_pipeline()
 
 | 环节 | 耗时 | 代码位置 |
 |---|---|---|
-| ASR（SenseVoice） | ~200ms | `engine/asr.py` |
+| ASR（Parakeet-TDT-0.6B） | **~180ms**（CPU 实测，3.7s 音频；GPU 应更快） | `engine/asr.py` |
 | RAG（bge-m3 + FAISS） | ~15-50ms | `engine/rag.py` |
 | LLM 首 token（DeepSeek 云端） | ~163ms | `engine/llm.py` |
 | TTS 首段（Kokoro） | 未单独实测 | `engine/tts.py` |
@@ -145,14 +145,14 @@ _run_pipeline()
 | `engine/llm.py` | DeepSeek 客户端 + 流式切句 + 历史/摘要 + think 清洗 | ⭐⭐ |
 | `engine/tts.py` | Kokoro 流式合成（音色固定 `af_heart`）+ 打断检查 | ⭐⭐ |
 | `engine/rag.py` | bge 向量化 + FAISS 检索 + 置信度阈值 | ⭐⭐ |
-| `engine/asr.py` | **唯一的 ASR 实现**（SenseVoiceSmall / FunASR） | ⭐⭐ |
+| `engine/asr.py` | **唯一的 ASR 实现**（Parakeet-TDT / transformers） | ⭐⭐ |
 | `engine/vad.py` | Silero VAD（CPU） | ⭐⭐ |
 | `engine/filler.py` | 语气词预合成与轮询取用 | ⭐ |
 | `static/` | 前端：`voice_agent.html`（88 行骨架）+ `css/` + `js/`（9 个 ES module） | ⭐⭐ |
 | `run.sh` | **唯一的启停入口**：配置 + 预检 + 启动 + 守护 + 排障 | ⭐⭐ |
-| `test/test_rag.py` | RAG 检索 A/B 基准（bge-small/bge-m3 × 有无 reranker）；现用 bge-m3 | ⭐ |
+| `test/test_rag.py` | RAG 检索基准（bge-m3 × 有无 reranker）。10 条英文问句含 8 正例 + 2 负例，输出延迟与**正负例分数间隔**，用于判断阈值是否合理 | ⭐ |
 | `check_deps.py` | 依赖自检：22 必需 + 2 可选，缺必需包时退出码 1 | ⭐ |
-| `models/download_model.py` | 批量下载权重（含已废弃条目，见 [9.2](#4-下载模型)） | ⭐ |
+| `models/download_model.py` | 批量下载 ASR / RAG / TTS 权重（路径按 `__file__` 推仓库根，任意目录可跑） | ⭐ |
 | `.env` / `.env.example` | 本地环境变量；`.env` 已 gitignore，`.env.example` 可提交 | ⭐ |
 
 ### `engine/` 分两层（依赖单向，下层不 import 上层）
@@ -491,7 +491,7 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 
 | 目录 | 用途 | 大小 | 关键文件 |
 |---|---|---|---|
-| `models/SenseVoiceSmall` | ASR | 897M | `model.pt` |
+| `models/parakeet-tdt-0.6b-v3` | ASR（英语，WER ≈ 6%） | 2.5G | `model.safetensors` + `tokenizer.json` |
 | `models/bge-m3` | RAG 向量化（**1024 维**） | 4.3G | `config.json` + 权重 |
 | `models/snakers4_silero-vad` | VAD | 14M | **`silero_vad.jit`** |
 | `models/Kokoro-82M` | TTS | 347M | `config.json` + `kokoro-v1_0.pth` + `voices/af_heart.pt` |
@@ -501,22 +501,37 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available(), tor
 > `engine/tts.py` 自己构造 `KModel(config=..., model=...)` 并把音色 `.pt` 的绝对路径
 > 传给 `KPipeline`，所以加载 TTS 全程不联网。
 >
-> `models/bge-m3` 比 `bge-small-zh-v1.5`（184M / 512 维）大 20 倍、检索慢一个量级，
+> `models/bge-m3` 比旧的 `bge-small-zh-v1.5`（184M / 512 维，**已删除**）大 20 倍、检索慢一个量级，
 > 但多语言召回明显更好。索引每次启动在内存重建，换模型不需要手动清任何缓存。
 
-**下载方式**（国内建议 modelscope）：
+**下载方式**：
 
 ```bash
-pip install modelscope
+# Parakeet-TDT-0.6B v3 —— 只托管在 HuggingFace（ModelScope 没有），约 2.5GB
+huggingface-cli download nvidia/parakeet-tdt-0.6b-v3 \
+    --local-dir models/parakeet-tdt-0.6b-v3
+
+# 国内访问 HuggingFace 慢/断流时，先设镜像，再用 wget -c 断点续传单文件
+# （实测 `snapshot_download` 在这种网络下容易 TLS 断连，wget 更稳）
+export HF_ENDPOINT=https://hf-mirror.com
+wget -c --tries=20 --timeout=60 \
+  -O models/parakeet-tdt-0.6b-v3/model.safetensors \
+  "$HF_ENDPOINT/nvidia/parakeet-tdt-0.6b-v3/resolve/main/model.safetensors"
+
+# bge-m3 走 ModelScope 更快
 python -c "
 from modelscope import snapshot_download
-snapshot_download('iic/SenseVoiceSmall', local_dir='models/SenseVoiceSmall')
+snapshot_download('BAAI/bge-m3', local_dir='models/bge-m3')
 "
 ```
 
+> ⚠️ Parakeet 需要 `model.safetensors`（约 2.5GB）**完整下载**才可用。
+> `config.json` / `tokenizer.json` 只有几十 KB，会先下完——此时目录看着"有东西"，
+> 但体积只有几 MB。`bash run.sh preflight` 会靠**体积**识别出这种半成品状态。
+
 | 模型 | 来源 |
 |---|---|
-| SenseVoiceSmall | ModelScope `iic/SenseVoiceSmall` |
+| Parakeet-TDT-0.6B v3 | HuggingFace `nvidia/parakeet-tdt-0.6b-v3`（`--local-dir models/parakeet-tdt-0.6b-v3`） |
 | bge-m3 | BAAI 官方仓库（ModelScope `BAAI/bge-m3`） |
 | Kokoro-82M | HuggingFace `hexgrad/Kokoro-82M`（`--local-dir models/Kokoro-82M`） |
 | en_core_web_sm | GitHub `explosion/spacy-models` release 的官方 wheel（**不在** ModelScope / PyPI） |
@@ -546,7 +561,7 @@ ls models/en_core_web_sm/     # 期望: en_core_web_sm/  en_core_web_sm-3.8.0.di
 ```bash
 python - <<'EOF'
 import os
-need = {"models/SenseVoiceSmall": "ASR", "models/snakers4_silero-vad": "VAD",
+need = {"models/parakeet-tdt-0.6b-v3": "ASR", "models/snakers4_silero-vad": "VAD",
         "models/bge-m3": "RAG", "models/Kokoro-82M": "TTS",
         "models/en_core_web_sm": "spaCy 英文模型"}
 for p, why in need.items():
@@ -556,9 +571,8 @@ print(f"  {'✅' if os.path.isfile(jit) else '❌'} {jit}   <- VAD 真正加载�
 EOF
 ```
 
-> ⚠️ `models/download_model.py` **尚未同步清理**：仍含已废弃模型的条目
-> （VoxCPM1.5 / MiniCPM4.1 / FireRedASR2 / FireRedVAD / spkrec），且 `local_dir` 是相对路径
-> `./models/...` —— **在 `models/` 目录里运行会下到 `models/models/`**。只在仓库根目录运行。
+> `models/download_model.py` 已同步：只下 Parakeet-TDT（HuggingFace）/ bge-m3 / Kokoro（ModelScope），
+> 路径按 `__file__` 推仓库根，**任意目录都能跑**。VAD 与 spaCy 模型来源特殊，需按本节单独获取。
 
 ---
 
@@ -570,7 +584,7 @@ EOF
 ┌──────────────────────────────────────────────┐
 │  GPU 0  (24GB)   ← ws_server 单进程独占       │
 │  ──────────────────────────────────────────  │
-│  ASR (SenseVoice)         ≈ 2~3GB            │
+│  ASR (Parakeet-TDT)       ≈ 2~3GB            │
 │  TTS (Kokoro-82M)         ≈ 0.3GB（不预分配） │
 │  实际峰值                 ≈ 13~14GB           │
 │  余量                     ≈ 10GB              │
@@ -582,7 +596,7 @@ EOF
 | 组件 | 跑在哪 | 依据 |
 |---|---|---|
 | **LLM** | **云端 API** | 固定 DeepSeek，本机不占显存 |
-| ASR（SenseVoice） | GPU（可设 CPU） | `ASR_DEVICE` |
+| ASR（Parakeet-TDT） | GPU（可设 CPU） | `ASR_DEVICE` |
 | TTS（Kokoro） | GPU（很轻，可放 CPU） | `TTS_DEVICE` |
 | RAG（bge） | CPU | `RAG_DEVICE=cpu`，检索只占几毫秒 |
 | Silero VAD | **CPU**（固定） | `engine/vad.py` 用 `map_location="cpu"` |
@@ -617,7 +631,7 @@ EOF
 | `bash run.sh` / `bash run.sh dev` | 前台启动，Ctrl+C 连子进程一起停 |
 | `bash run.sh start` | 常驻（脱离终端）+ 自动拉起 watchdog |
 | `bash run.sh stop` / `restart` | 停止 / 重启（按**进程组**清理，含 TTS 子进程） |
-| `bash run.sh status` | 进程 / 显卡 / 配置 / 日志位置 |
+| `bash run.sh status` | 进程 / 显卡 / 版本 / **当前用的 ASR+EMBED 模型** / 配置 / 日志位置 |
 | `bash run.sh clean-gpu` | 列出占显存的进程；`FORCE=1` 才真杀 |
 | `bash run.sh watchdog [--once]` | 看护循环；`--once` 单轮巡检 |
 | `bash run.sh preflight` | 只跑预检，不启动服务 |
@@ -654,7 +668,7 @@ EOF
 ```
 2026-11-22 11:03:47,984 [INFO] Voice Agent Server === Loading engines (v3.0) ===
 2026-11-22 11:03:47,984 [INFO] Voice Agent Server Loading VAD (Silero)...
-2026-11-22 11:03:48,009 [INFO] Voice Agent Server Loading ASR (SenseVoice)...
+2026-11-22 11:03:48,009 [INFO] Voice Agent Server Loading ASR (Parakeet-TDT)...
 2026-11-22 11:03:51,685 [INFO] Voice Agent Server Loading RAG (bge-m3, threshold=0.35)...
 2026-11-22 11:03:56,276 [INFO] Voice Agent Server RAG index: 59 docs, dim=1024
 2026-11-22 11:03:56,276 [INFO] Voice Agent Server LLM client ready (deepseek @ ...)
@@ -716,6 +730,18 @@ watch -n1 'curl -s http://localhost:3000/api/metrics | python -m json.tool'
 启动时自动建 FAISS 索引（**只在内存里**，所以每次启动重新编码一遍——59 条很快）。
 热更新用 `POST /api/rag/reload`。
 
+**检索质量怎么验**：`python test/test_rag.py`（可加 `RAG_DEVICE=cpu`）会跑 10 条英文问句，
+其中 2 条是知识库里没有的负例，并给出"正例最低分 / 负例最高分"。当前实测：
+
+```
+正例 8 条：0.486 ~ 0.800（全部命中正确条目）
+负例 2 条：0.454 / 0.477（硬凑到了不相关的条目）
+→ 可分离窗口仅 (0.477, 0.486)，窄到无法靠单一阈值可靠区分
+```
+
+所以 `RAG_SCORE_THRESHOLD=0.35` 主要起"挡掉明显不相关的"作用，**不能指望它判断"知识库有没有答案"**——
+兜底靠 `SYSTEM_PROMPT_RAG` 里的"没覆盖就说 Let me check that"指令。
+
 ### 8.2 TTS 音色（固定，不可切换）
 
 TTS 是 **Kokoro-82M**：用 11 个预置 voicepack，**没有"零样本音色克隆"这回事**——
@@ -759,6 +785,9 @@ KOKORO_SPEED=0.9 bash run.sh     # 1.0 = 自然速；降到 0.9 让学员听得�
 | 预检报 `缺少 kokoro` / `misaki` | `pip install kokoro==0.9.4`（会带上 `misaki[en]`） |
 | 预检报 `权重缺失` | 见 [4. 下载模型](#4-下载模型) |
 | 卡在 `Loading VAD` 很久 | Silero 找不到本地 `silero_vad.jit` 会**联网**去 torch.hub 下载 |
+| `Loading ASR` 报 `safetensors` / `incomplete metadata` | Parakeet 权重没下完。`du -sh models/parakeet-tdt-0.6b-v3` 应约 2.5G；用 `wget -c` 续传 |
+| 预检报 `ASR 权重目录不完整（权重体积不足…）` | 同上：只有 `config.json`/`tokenizer.json` 下完了，`model.safetensors` 还缺 |
+| ASR 一直识别为空串 | 音频太轻或纯静音。`bash run.sh status` 看 ASR 模型对不对，再看麦克风增益 |
 | `Loading TTS` 阶段 CUDA OOM | 最常见。用 `nvidia-smi` 看是谁占着 → `bash run.sh clean-gpu` 或 `bash run.sh stop` |
 | 声音变调/变速 | 采样率错配。上行必须 **16k**、下行必须 **24k**；错配不报错只变调 |
 | 能识别但没声音 | TTS 没装好（`kokoro`/`misaki`）；看日志 `Loading TTS` 之后有没有报错 |
@@ -873,7 +902,7 @@ server/routes_voice.py  ws_voice()      ← 连接生命周期、消息分发
 
 | # | 位置 | 现象 |
 |---|---|---|
-| 1 | `engine/asr.py` | 名字像"ASR 抽象层/工厂"，**实际就是唯一的 SenseVoice 实现**。仓库已精简为单实现，没有多后端分支 |
+| 1 | `engine/asr.py` | 名字像"ASR 抽象层/工厂"，**实际就是唯一的 Parakeet-TDT 实现**。仓库已精简为单实现，没有多后端分支 |
 | 2 | `engine/rag.py` | `RAG_SCORE_THRESHOLD=0.35` 是按**余弦相似度**标定的；一旦启用 reranker，比较的是 **logit 量纲**的分数，**两者不等价**，需重新标定 |
 | 3 | `engine/dialog/transport.py` | `_send_audio()` 是**死代码**（当前零调用点），`TTS_SEND_CHUNK_BYTES` 只被它使用。真实下发在 `_stream_llm_tts` / `_play_system_tts` 里逐段进行 |
 | 4 | `engine/dialog/endpointing.py` | 短句（<0.5s）与长句（>3s）**都返回 SLOW 档**（640ms），只有中段用 DEFAULT（416ms）。名字叫"自适应"，实际是两档 |

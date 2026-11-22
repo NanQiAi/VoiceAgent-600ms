@@ -1,6 +1,6 @@
 # ============================================================================
 # Python 依赖清单 —— 级联 Pipeline
-#   VAD(Silero) → ASR(SenseVoice) → RAG(bge-m3) → LLM(DeepSeek) → TTS(Kokoro-82M)
+#   VAD(Silero) → ASR(Parakeet-TDT) → RAG(bge-m3) → LLM(DeepSeek) → TTS(Kokoro-82M)
 # ============================================================================
 # 版本取自实测跑通的环境（Python 3.11 + CUDA 13.0 轮子）。
 #
@@ -22,9 +22,9 @@ torchaudio==2.11.0
 torchvision==0.28.0
 numpy==2.3.5
 
-# ── ASR：SenseVoiceSmall（FunASR 体系）──
-funasr==1.4.16
-modelscope==1.40.1              # funasr 定位权重 + models/download_model.py 直接 import
+# ── ASR：Parakeet-TDT-0.6B（transformers 原生实现，不需要 NeMo）──
+transformers==5.17.0            # 提供 ParakeetForTDT / ParakeetProcessor
+modelscope==1.40.1              # models/download_model.py 直接 import
 
 # ── RAG：bge-m3（1024 维）+ FAISS ──
 sentence-transformers==6.1.0
