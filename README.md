@@ -170,7 +170,7 @@ engine/
     transport.py     下行发送
     streaming.py     LLM 句子流 → TTS 音频流
     pipeline.py      一轮对话编排
-    session.py       问候 / 空闲 / PTT / 文本输入
+    session.py       问候 / 空闲 / 文本输入
 ```
 
 ### `server/` 是独立顶层包（不在 `engine/` 里）
@@ -259,12 +259,7 @@ BARGE_IN_CONFIRM_CHUNKS = 2     # 连续 2 帧（≈64ms）才真打断，挡单
 VAD 误切或用户只说"嗯/那个"时，立刻送 LLM 既浪费一轮 turn 又容易答非所问，
 所以极短文本（≤4 字符）先缓存，等后续拼成整句再送（`ASR_ACCUM_*`）。
 
-### 4.8 PTT / Demo 模式
-
-`DEMO_MODE=1`：按住说话（`ptt_start`），音频先在本地缓存，松手（`ptt_end`）整段送 pipeline。
-跳过 VAD 判停、也不主动播问候语——用来隔离"到底是 VAD 问题还是后续链路问题"。
-
-### 4.9 5 个状态
+### 4.8 5 个状态
 
 ```
 IDLE ──VAD检出──> LISTENING ──静音达阈值──> THINKING ──首句就绪──> SPEAKING ──播完──> IDLE
@@ -290,8 +285,6 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | 帧 | 含义 |
 |---|---|
 | **二进制** | 16kHz / 单声道 / int16 裸 PCM，**512 采样（32ms）一帧** |
-| `{"type":"ptt_start"}` | 按住说话开始（仅 DEMO_MODE） |
-| `{"type":"ptt_end"}` | 松手，整段送 pipeline（仅 DEMO_MODE） |
 | `{"type":"text_input","text":"..."}` | 文本输入，跳过 ASR 直接进 pipeline |
 | `{"type":"manual_barge_in"}` | 手动打断（空格键/按钮），不需要 VAD 确认 |
 | `{"type":"reset"}` | 复位会话（清对话历史与状态机） |
@@ -301,7 +294,7 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | 帧 | 含义 |
 |---|---|
 | **二进制** | 24kHz / 单声道 / int16 裸 PCM |
-| `ready` | 握手完成（含 `session_id` / `version` / `mode`） |
+| `ready` | 握手完成（含 `session_id` / `version` / `mode`；`mode` 恒为 `duplex`，全双工是唯一模式） |
 | `state` | 状态机变化（idle / listening / thinking / speaking） |
 | `asr` | 识别结果（`text` / `latency_ms` / `turn`；`source="text"` 表示文本回显） |
 | `rag` | RAG 命中的上下文 |
@@ -314,7 +307,7 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | `system_message` | 服务端主动文案（问候 / 空闲 / 错误 / 告别） |
 | `session_end` | 会话结束（`reason`） |
 | `error` | 错误 |
-| `ptt_ack` / `reset_ack` | PTT / 复位的回执 |
+| `reset_ack` | 复位的回执 |
 
 ### 5.3 音频格式约定（**最容易写错的地方**）
 
@@ -351,7 +344,7 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 |---|---|---|
 | 1 | 路径基准 | `BASE_DIR` / `MODEL_DIR` |
 | 2 | 权重目录与 TTS 参数 | `ASR_MODEL_DIR` / `VAD_MODEL_DIR` / `EMBED_MODEL_DIR` / `KOKORO_MODEL_DIR` / `KOKORO_SPEED`（**音色固定**，见 8.2） |
-| 3 | 设备与服务开关 | `ASR_DEVICE` / `TTS_DEVICE` / `RAG_DEVICE` / `DEMO_MODE` / `PORT` / `USE_SSL` / **`VERSION`** |
+| 3 | 设备与服务开关 | `ASR_DEVICE` / `TTS_DEVICE` / `RAG_DEVICE` / `PORT` / `USE_SSL` / **`VERSION`** |
 | 4 | LLM | `LLM_BASE_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY`（env 名 `DEEPSEEK_*`）/ `LLM_MAX_HISTORY` |
 | 5 | 音频契约 | `SAMPLE_RATE`(16k) / `CHUNK_MS`(32) / `CHUNK_SAMPLES`(512) / `TTS_SAMPLE_RATE`(24k) |
 | 6 | RAG | `KB_DATA_PATH` / `RAG_TOP_K` / `RAG_SCORE_THRESHOLD` |
@@ -664,7 +657,7 @@ EOF
 | `VOICE_PORT` | `3000` | 写进 `config.PORT` |
 | `GPU_VOICE` | `1` | 语音栈用的物理卡号 |
 | `DEEPSEEK_API_KEY` | 空 | LLM 凭据；缺失会导致预检失败 |
-| `RAG_DEVICE` / `DEMO_MODE` | `cpu` / `0` | 同 `config.py` |
+| `RAG_DEVICE` | `cpu` | 同 `config.py` |
 | `VA_SKIP_PREFLIGHT` | `0` | `1` = 跳过预检（应急） |
 | `VA_LOG_DIR` | `<仓库>/logs` | 日志目录 |
 | `FORCE` | `0` | `clean-gpu` 时 `1` = 真 kill |

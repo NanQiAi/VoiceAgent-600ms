@@ -14,7 +14,7 @@ endpointing.py  判停：按本次说话时长自适应选静音阈值
 transport.py    下行发送：系统话术 / 语气词 / TTS 音频
 streaming.py    LLM 句子流 → TTS 音频流（首响关键路径）
 pipeline.py     一轮对话的编排：ASR → RAG → LLM → TTS + 错误兜底
-session.py      会话生命周期：问候 / 空闲超时 / PTT / 文本输入
+session.py      会话生命周期：问候 / 空闲超时 / 文本输入
 manager.py      门面 `ConversationManager`
 
 只在这里导出最常用的三个名字，其余请从各自模块导入。

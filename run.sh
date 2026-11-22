@@ -19,7 +19,7 @@
 #
 # 常用可覆盖的环境变量（都有合理默认值）：
 #   VOICEAGENT_PYTHON=<python 绝对路径>   DEEPSEEK_API_KEY=sk-...
-#   GPU_VOICE=0   VOICE_PORT=3000   RAG_DEVICE=cpu   DEMO_MODE=0
+#   GPU_VOICE=0   VOICE_PORT=3000   RAG_DEVICE=cpu
 #   VA_LOG_DIR=<日志目录>   VA_SKIP_PREFLIGHT=1
 #   VPS_IP=<ip>  ENABLE_TUNNEL=1（反向 SSH 隧道，默认关闭）
 #   CHECK_INTERVAL=30  CHECK_TIMEOUT=300（守护节奏）
@@ -188,7 +188,6 @@ GPU_VOICE="${GPU_VOICE:-0}"
 # Voice Agent：ASR + RAG + TTS 都在这一个进程里
 VOICE_PORT="${VOICE_PORT:-3000}"
 RAG_DEVICE="${RAG_DEVICE:-cpu}"        # 检索只需几毫秒，放 CPU 把显存留给 ASR/TTS
-DEMO_MODE="${DEMO_MODE:-0}"
 
 # 可选：反向 SSH 隧道（把本机 VOICE_PORT 暴露到 VPS）
 ENABLE_TUNNEL="${ENABLE_TUNNEL:-0}"
@@ -539,7 +538,7 @@ va_start_voice_bg() {
     local run=(env
         CUDA_VISIBLE_DEVICES="$vis_dev"
         ASR_DEVICE="$asr_dev" TTS_DEVICE="$tts_dev" RAG_DEVICE="$RAG_DEVICE"
-        PORT="$VOICE_PORT" DEMO_MODE="$DEMO_MODE"
+        PORT="$VOICE_PORT"
         "$PYTHON" "$VA_REPO_DIR/ws_server.py")
     # 用 setsid：TTS 后端可能 fork 出持有 CUDA 的子进程，必须整组清理
     setsid "${run[@]}" > "$VOICE_LOG" 2>&1 &

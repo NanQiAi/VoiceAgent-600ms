@@ -1,11 +1,11 @@
 """全双工语音通道 `/ws/voice`：一条 WebSocket 连接 = 一个会话。
 
 上行：二进制帧 = 16kHz 单声道 int16 裸 PCM（512 采样/帧）；
-      文本帧 = JSON 控制消息 `ptt_start` / `ptt_end` / `text_input` / `manual_barge_in` / `reset`。
+      文本帧 = JSON 控制消息 `text_input` / `manual_barge_in` / `reset`。
 下行：二进制帧 = 24kHz 单声道 int16 裸 PCM；
       文本帧 = `ready` / `state` / `asr` / `rag` / `filler` / `llm_sentence` / `llm` / `audio_start` /
               `metrics` / `system_message` / `barge_in` / `session_end` / `error` /
-              `ptt_ack` / `reset_ack`。
+              `reset_ack`。
 契约：`turn` 是轮次序列号（`audio_start` 让前端丢弃旧轮次的迟到音频）；
       `asr` 的 `latency_ms=0` 表示复用了投机 ASR 或聚合文本；文本帧一律 `ensure_ascii=False`。
 """
@@ -24,7 +24,6 @@ from config import (
     VERSION,
     ASR_EMPTY_RETRY_TEXT,
     ASR_NOISY_SUGGEST_TEXT,
-    DEMO_MODE,
     FAREWELL_KEYWORDS,
     GREETING_TEXT,
     IDLE_GOODBYE_S,
@@ -32,7 +31,6 @@ from config import (
     IDLE_PROMPT_TEXT,
     IDLE_TIMEOUT_S,
     MAX_CONSECUTIVE_EMPTY_ASR,
-    SAMPLE_RATE,
     VAD_MODEL_DIR,
 )
 
@@ -76,44 +74,16 @@ class DownlinkSender:
                 self._log.warning("WebSocket send failed (marking dead): %s", e)
 
 
-class PttRecorder:
-    """PTT（按住说话）演示模式的录音缓存；DEMO_MODE=0 时全程不用。"""
-
-    def __init__(self):
-        self.active = False
-        self._chunks: list[np.ndarray] = []
-
-    def start(self):
-        self.active = True
-        self._chunks = []
-
-    def append(self, samples: np.ndarray):
-        if self.active:
-            self._chunks.append(samples)
-
-    def finish(self) -> np.ndarray | None:
-        """结束录音并返回整段音频；没录到任何帧时返回 None。"""
-        self.active = False
-        if not self._chunks:
-            return None
-        audio = np.concatenate(self._chunks)
-        self._chunks = []
-        return audio
-
-    def reset(self):
-        self.active = False
-        self._chunks = []
-
-
 def build_experience_config() -> dict:
     """把 config.py 的 D1~D4 话术与阈值打包，让状态机不直接依赖 config（便于单测注入）。"""
     return {
         "greeting_text": GREETING_TEXT,
-        # D2 空闲：15s 未说话提醒一次，30s 仍未说话则告别并结束会话（单位：秒）。
+        # D2 空闲：IDLE_TIMEOUT_S 未说话提醒一次，IDLE_GOODBYE_S 仍未说话则告别并结束会话（秒）。
         "idle_timeout_s": IDLE_TIMEOUT_S,
         "idle_goodbye_s": IDLE_GOODBYE_S,
         "idle_prompt_text": IDLE_PROMPT_TEXT,
         "idle_goodbye_text": IDLE_GOODBYE_TEXT,
+        # D3 错误恢复：pipeline 崩掉时的兜底道歉
         "error_apology_text": ERROR_APOLOGY_TEXT,
         "asr_empty_retry_text": ASR_EMPTY_RETRY_TEXT,
         "asr_noisy_suggest_text": ASR_NOISY_SUGGEST_TEXT,
@@ -122,28 +92,12 @@ def build_experience_config() -> dict:
     }
 
 
-async def handle_control_message(msg: dict, cm: ConversationManager, ptt: PttRecorder,
+async def handle_control_message(msg: dict, cm: ConversationManager,
                                  send: DownlinkSender, session_log: logging.LoggerAdapter):
     """处理一条 JSON 控制帧；未知 type 静默忽略（向下兼容前端先行升级）。"""
     msg_type = msg.get("type")
 
-    if msg_type == "ptt_start":
-        ptt.start()
-        session_log.info("PTT start")
-        await send({"type": "ptt_ack", "recording": True})
-
-    elif msg_type == "ptt_end":
-        audio = ptt.finish()
-        if audio is None:
-            session_log.info("PTT end (empty)")
-            await send({"type": "ptt_ack", "recording": False, "duration_s": 0})
-            return
-        duration_s = len(audio) / SAMPLE_RATE
-        session_log.info("PTT end (%.1fs, %d samples)", duration_s, len(audio))
-        await send({"type": "ptt_ack", "recording": False, "duration_s": round(duration_s, 2)})
-        await cm.process_ptt(audio)
-
-    elif msg_type == "text_input":
+    if msg_type == "text_input":
         text = msg.get("text")
         # 缺字段 / 空串：直接忽略（前端半成品帧不该拆掉会话）
         if not isinstance(text, str) or not text.strip():
@@ -156,7 +110,6 @@ async def handle_control_message(msg: dict, cm: ConversationManager, ptt: PttRec
 
     elif msg_type == "reset":
         cm.reset()
-        ptt.reset()
         await send({"type": "reset_ack"})
 
 
@@ -196,15 +149,14 @@ async def ws_voice(ws: WebSocket):
 
     runtime.register_session(session_id, cm)
 
-    mode = "demo" if DEMO_MODE else "duplex"
-    await send({"type": "ready", "session_id": session_id, "version": VERSION, "mode": mode})
+    # mode 字段保留在协议里（前端目前不读），全双工是唯一模式。
+    await send({"type": "ready", "session_id": session_id, "version": VERSION,
+                "mode": "duplex"})
 
     # D1 问候语用 _track_task 起后台任务而不是 await：收发循环立刻开始，
-    # 问候播放期间用户就能说话并触发打断；DEMO_MODE 下不主动问候。
-    if GREETING_TEXT and not DEMO_MODE:
+    # 问候播放期间用户就能说话并触发打断。
+    if GREETING_TEXT:
         cm._track_task(cm.start_greeting(), name="greeting")
-
-    ptt = PttRecorder()
 
     try:
         while True:
@@ -225,10 +177,7 @@ async def ws_voice(ws: WebSocket):
                     continue
                 # int16 → float32 归一化：除以 32768（2^15）而非 32767，保证最小值 -32768 映射到 -1.0。
                 samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-                if DEMO_MODE:
-                    ptt.append(samples)
-                else:
-                    await cm.feed_audio(samples)
+                await cm.feed_audio(samples)
 
             elif "text" in data and data["text"]:
                 # 控制帧解析失败只跳过这一帧：一条畸形 JSON 不该让整个通话中断。
@@ -237,7 +186,7 @@ async def ws_voice(ws: WebSocket):
                 except json.JSONDecodeError as e:
                     session_log.warning("Dropped malformed control frame: %s", e)
                     continue
-                await handle_control_message(msg, cm, ptt, send, session_log)
+                await handle_control_message(msg, cm, send, session_log)
 
     # 客户端主动断开属正常收尾：只记录已进行到第几轮，不报错。
     except WebSocketDisconnect:

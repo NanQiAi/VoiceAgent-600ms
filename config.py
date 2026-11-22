@@ -95,10 +95,6 @@ ASR_DEVICE = os.environ.get("ASR_DEVICE", "cuda:0")
 TTS_DEVICE = os.environ.get("TTS_DEVICE", "cuda:0")
 RAG_DEVICE = os.environ.get("RAG_DEVICE", "cuda:0")
 
-# DEMO_MODE=1 → PTT（按住说话）演示：上行音频先本地缓存，收到 ptt_end 才整段送
-# pipeline；且不主动播问候语。默认 0 = 全双工。
-DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"
-
 # 服务监听端口与是否由 uvicorn 自己终结 TLS。
 # USE_SSL=0 时明文 HTTP，TLS 交给前置 Nginx（生产默认）。
 PORT = int(os.environ.get("PORT", "3000"))

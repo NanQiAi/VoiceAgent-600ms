@@ -38,7 +38,7 @@ THINKING --用户又开口--> 追加进同一轮(_thinking_extra_buffer)，不�
 | `dialog/transport.py`   | 下行发送（系统话术/语气词/TTS 音频） |
 | `dialog/streaming.py`   | LLM 句子流 → TTS 音频流（首响关键路径） |
 | `dialog/pipeline.py`    | 一轮对话的编排：ASR→RAG→LLM→TTS + 错误兜底 |
-| `dialog/session.py`     | 会话生命周期：问候/空闲超时/PTT/文本输入 |
+| `dialog/session.py`     | 会话生命周期：问候/空闲超时/文本输入 |
 """
 
 import asyncio
@@ -74,7 +74,7 @@ log = logging.getLogger("Voice Agent.cm")
 
 
 class ConversationManager(
-    Session,        # 问候 / 空闲超时 / PTT / 文本输入
+    Session,        # 问候 / 空闲超时 / 文本输入
     Pipeline,       # ASR → RAG → LLM → TTS 编排
     Streaming,      # LLM 句子 → TTS 音频流
     Transport,      # 下行发送

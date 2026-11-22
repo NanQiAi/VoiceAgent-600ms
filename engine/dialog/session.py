@@ -1,18 +1,13 @@
 """E2E对话 · 会话生命周期
 
 会话级的入口与计时：主动问候（D1）、空闲超时追赶（D2）、
-PTT 按住说话、以及前端打字输入。
+以及前端打字输入。
 """
 
 import asyncio
 import logging
 import time
 
-import numpy as np
-
-from .constants import (
-    _ASR_TAG_RE,
-)
 from .state import State
 
 log = logging.getLogger("Voice Agent.cm")
@@ -20,72 +15,6 @@ log = logging.getLogger("Voice Agent.cm")
 
 class Session:
     """E2E对话 · 会话生命周期。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
-
-    async def process_ptt(self, audio: np.ndarray):
-        """按住说话（Push-to-Talk）演示模式：整段录音一次性送入，同步跑完 ASR→RAG→LLM→TTS。
-
-        没有 VAD/语气词/打断路径（音频整段到达），保留错误兜底，且**不等待** LLM/TTS 结束就返回；
-        内部捕获所有异常：任何失败都退化成"播一句道歉 + 回 IDLE"。
-        """
-        self._turn += 1
-        # 局部快照：后续 await 期间 self._turn 可能被别的路径改动，用局部变量保证本轮消息 turn 一致
-        turn = self._turn
-        t_start = time.perf_counter()
-        loop = asyncio.get_event_loop()
-
-        self.state = State.THINKING
-        await self._send({"type": "state", "state": "thinking"})
-
-        try:
-            asr_result = await loop.run_in_executor(None, self.asr.transcribe, audio)
-            user_text = _ASR_TAG_RE.sub("", asr_result["text"]).strip()
-            asr_ms = asr_result["latency_ms"]
-            await self._send({"type": "asr", "text": user_text,
-                              "latency_ms": round(asr_ms, 1), "turn": turn})
-
-            if not user_text or len(user_text) < 2:
-                log.info("[PTT Turn %d] ASR empty, returning to IDLE", turn)
-                self.state = State.IDLE
-                await self._send({"type": "state", "state": "idle"})
-                return
-
-            rag_context = ""
-            rag_ms = 0.0
-            try:
-                rag_result = await loop.run_in_executor(None, self.rag.get_context, user_text)
-                rag_context = rag_result["context"]
-                rag_ms = rag_result["total_ms"]
-            except Exception:
-                pass
-            await self._send({"type": "rag", "context": rag_context,
-                              "latency_ms": round(rag_ms, 1), "turn": turn})
-
-            # 清掉打断闸门：这是"开始播报"的固定前置动作，否则新音频会被立刻掐断
-            self._cancel_speaking.clear()
-            self.state = State.SPEAKING
-            await self._send({"type": "state", "state": "speaking"})
-            await self._stream_llm_tts(user_text, rag_context, turn, t_start, asr_ms, rag_ms)
-
-        except Exception as e:
-            log.error("[PTT Turn %d] Pipeline error: %s", turn, e, exc_info=True)
-            self.metrics.record_error()
-            try:
-                self._cancel_speaking.clear()
-                self.state = State.SPEAKING
-                await self._send({"type": "state", "state": "speaking"})
-                await self._play_system_tts(self._error_apology, turn)
-            except Exception:
-                pass
-        finally:
-            # 只要还停在 THINKING/SPEAKING 就回收成 IDLE；若已被打断转入 LISTENING，则保留用户状态
-            if self.state in (State.THINKING, State.SPEAKING):
-                self.state = State.IDLE
-                self._idle_since = time.monotonic()
-                try:
-                    await self._send({"type": "state", "state": "idle"})
-                except Exception:
-                    pass
-
 
     async def handle_text_input(self, text: str):
         """处理前端打字输入（协议 `text_input`）：跳过 VAD/ASR，直接走 RAG → LLM → TTS。
