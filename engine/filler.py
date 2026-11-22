@@ -1,21 +1,22 @@
 """语气词（filler）引擎：启动时把预置应答词合成为裸 PCM 缓存，运行时零延迟取用，填补 THINKING 阶段的空档。
 
-下发由 engine/conversation_manager.py 的 `_send_filler()` 负责（`type=filler` + 裸音频帧）；
+下发由 engine/dialog/transport.py 的 `_send_filler()` 负责（`type=filler` + 裸音频帧）；
 本模块只在启动阶段和 asyncio 事件循环线程里被访问，没有加锁。
 """
-import random
 import logging
+import random
+
 import numpy as np
 
-log = logging.getLogger("voxlabs.filler")
+log = logging.getLogger("Voice Agent.filler")
 
-# 预置词表全是 1~2 音节的极短应答词；末尾逗号是刻意的——让 VoxCPM 用"话没说完"的升调读出来，
+# 预置词表全是 1~2 音节的极短应答词；末尾逗号是刻意的——让 TTS 用"话没说完"的升调读出来，
 # 听起来像"我在听"而不是"我说完了"，避免用户误以为轮到自己说话而抢话（Barge-in）。
-FILLER_TEXTS = ["嗯，", "好的，", "是的，", "嗯嗯，", "好，"]
+FILLER_TEXTS = ["Well,", "Sure,", "Okay,", "Right,", "So,"]
 
-# 单条 filler 的硬上限（秒），来自 v2.9.1 的一次线上问题：VoxCPM 偶发生成退化/停不下来
+# 单条 filler 的硬上限（秒），来自 v3.0 的一次线上问题：旧版 TTS 偶发生成退化/停不下来
 # （generation loop），一条语气词被合成十几秒，与后面正式回答叠着播（串音）。
-# conversation_manager._send_filler() 里还有一个 44100*2*2 的等价上限做二次防御。
+# conversation_manager._send_filler() 里还有一个 24000*2*2 的等价上限做二次防御。
 MAX_FILLER_SEC = 2.0
 
 
@@ -35,8 +36,8 @@ class FillerEngine:
         会触发 TTS/GPU 推理，是阻塞调用（启动期成本，运行时零成本）；单条失败只告警跳过，
         不向上抛异常——启动流程不能被个别语气词拖垮。
         """
-        sr = getattr(self._tts, "SAMPLE_RATE", 44100)
-        # 单声道 int16 = 2 字节/采样点：2.0s × 44100Hz × 2B = 176400 字节（必为偶数，
+        sr = getattr(self._tts, "SAMPLE_RATE", 24000)
+        # 单声道 int16 = 2 字节/采样点：2.0s × 24000Hz × 2B = 96000 字节（必为偶数，
         # 按字节截断不会切在半个采样点中间）。
         max_bytes = int(MAX_FILLER_SEC * sr * 2)
         log.info("Pre-generating %d filler words (max %.1fs / %d bytes each)...",
@@ -82,5 +83,5 @@ class FillerEngine:
 
     @property
     def sample_rate(self):
-        """TTS 输出采样率（Hz，VoxCPM 为 44100）；刻意不做默认值兜底，缺属性应尽早报错。"""
+        """TTS 输出采样率（Hz，Kokoro 为 24000）；刻意不做默认值兜底，缺属性应尽早报错。"""
         return self._tts.SAMPLE_RATE

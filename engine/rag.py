@@ -3,11 +3,12 @@
 级联 Pipeline 中的一环：ASR → 【RAG】→ LLM → TTS；`get_context()` 的输出填进
 `config.SYSTEM_PROMPT_RAG` 的 `{context}`，命中为空则 LLM 走兜底话术。
 """
-import os
 import json
+import os
 import time
-import numpy as np
+
 import faiss
+import numpy as np
 
 
 class RAGEngine:
@@ -137,7 +138,9 @@ class RAGEngine:
 
         candidates = []
         # i 同时充当 FAISS 原始排名（从 0 开始）
-        for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
+        # FAISS 的 search() 保证 scores/indices 同形；strict=True 只是把契约写死，
+        # 万一未来换了后端返回不等长，能立刻报错而不是静默丢候选。
+        for i, (score, idx) in enumerate(zip(scores[0], indices[0], strict=True)):
             if idx < 0:  # FAISS 在"库内文档少于 rerank_k"时填充的无效槽位
                 continue
             # copy() 防止把 score/rank 写回 self._documents，污染原始知识库
@@ -157,8 +160,10 @@ class RAGEngine:
                 rerank_scores = [rerank_scores]
             rerank_ms = (time.perf_counter() - t2) * 1000
 
-            # rerank_score 是模型 logit，与余弦 score 不同量纲
-            for c, rs in zip(candidates, rerank_scores):
+            # rerank_score 是模型 logit，与余弦 score 不同量纲。
+            # 用 strict=True：长度不一致要立刻暴露，而不是静默截断后
+            # 在下面的 sort 里因缺键抛一个难以定位的 KeyError。
+            for c, rs in zip(candidates, rerank_scores, strict=True):
                 c["rerank_score"] = float(rs)
             candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
 

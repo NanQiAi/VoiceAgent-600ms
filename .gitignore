@@ -56,7 +56,9 @@ htmlcov/
 # ---- 5. 本地私有：证书与密钥（公开仓库尤其别传）----
 # USE_SSL=1 时放自签的 cert.pem / key.pem
 certs/
-# 环境变量文件（API key 等）；允许提交示例文件
+# 环境变量文件（DEEPSEEK_API_KEY 等）；只允许提交模板 .env.example
+# ⚠️ 若 .env 曾被提交过，加这行之前的历史里仍有 key，需要
+#    git rm --cached .env 并吊销重发；此外它不受本规则约束（已跟踪文件不被忽略）。
 .env
 .env.*
 !.env.example
@@ -69,3 +71,9 @@ certs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- 8. 外部工具误写的会话文件 ----
+# 某些工具把 SQLite 的内存库 URI ":memory:" 当成路径前缀，生成 ":memory:.ses"。
+# 这类文件名以冒号开头，git 会把它解析成 pathspec 魔法（:magic:pattern），
+# 直接 `git add ':memory:.ses'` 会报 "pathspec ... did not match any files"。
+*.ses

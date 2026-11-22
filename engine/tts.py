@@ -1,223 +1,238 @@
-"""VoxCPM 1.5 流式 TTS（nanovllm-voxcpm 后端）+ 零样本音色克隆，级联 Pipeline 的最后一环。
+"""Kokoro-82M 流式 TTS（美式英语）+ 雅思陪练音色，级联 Pipeline 的最后一环。
 
-输出固定**单声道 44100Hz float32 裸 PCM**（无 WAV 头，量化成 int16 是调用方的事）；
-`SAMPLE_RATE=44100` 是下行链路，与上行 ASR 的 16000Hz（config.SAMPLE_RATE）不是一回事。
-引擎**不是线程安全**的：所有 generate() 调用必须串行（由调用方的有界队列间接保证）。
+输出固定**单声道 24000Hz float32 裸 PCM**（无 WAV 头，量化成 int16 是调用方的事）；
+`SAMPLE_RATE=24000` 是下行链路，与上行 ASR 的 16000Hz（config.SAMPLE_RATE）不是一回事。
+⚠️ 24000 是 Kokoro 的**硬约束**（模型内部声码器采样率），不要"为了统一"改成 44100——
+那等于让浏览器按错误速率播放，声音会变调。
+
+权重从**本地目录**（`models/Kokoro-82M`）加载，不走 HuggingFace 缓存。
+
+音色**固定在 `VOICE`**（`af_heart`）：标准美式英语女声，社区评级 A、韵律最自然、
+长段落不易听疲劳，正适合雅思听力陪练。
+
+本项目**不做音色克隆，也不开放换音色**：
+  · Kokoro 是用预置 voicepack 的模型，本来就不支持零样本克隆（旧版 VoxCPM 那套已整体移除）；
+  · 因此 `synthesize()` 系列没有 `voice` 参数，也没有 `set_default_voice()` —— 想换只能改
+    这里的 `VOICE` 常量（11 个 `af_*` 备选见 README 10.2）。
+  · 与旧版 VoxCPM 的另一处差异：**没有"丢弃首块"**。Kokoro 不是自回归声码器，首块就是
+    正常音频，照抄旧行为会每句都丢音。
+
+引擎**不是线程安全**的：所有合成调用必须串行（由调用方的有界队列间接保证）。
 """
-# os 只用于 basename 打日志与后缀判断；time.perf_counter 测 ttfa/total；
-# logging 统一用 voxlabs.* 命名空间；numpy 承载音频块与淡入斜坡
-import os
-import time
 import logging
+import time
+
 import numpy as np
 
-
-# ws_server 里 logging.basicConfig 的格式串含 %(name)s，用 "voxlabs.*" 前缀可一条命令过滤整条 pipeline
-log = logging.getLogger("voxlabs.tts")
+from config import KOKORO_MODEL_DIR, TTS_SAMPLE_RATE
 
 
-class VoxCPMTTS:
-    """VoxCPM 1.5 流式 TTS 引擎（单实例 = 单卡一份模型 + 若干克隆音色 prompt）。
+# ws_server 里 logging.basicConfig 的格式串含 %(name)s，命名空间统一成 "Voice Agent.*"，
+# 可一条命令过滤整条链路：grep "Voice Agent" logs/voice_agent.log
+log = logging.getLogger("Voice Agent.tts")
 
-    生命周期：`__init__`（只存配置）→ `load()`（吃显存）→ `register_voice()` → `warmup()` → `synthesize*()`。
+
+class KokoroTTS:
+    """Kokoro-82M TTS 引擎（单实例 = 一份 82M 权重 + 一个**固定**音色）。
+
+    生命周期：`__init__`（只存配置）→ `load()`（拉权重/建 pipeline）→ `warmup()` → `synthesize*()`。
     """
 
-    # VoxCPM 固定输出采样率（Hz），与上行 ASR 的 16000Hz（config.SAMPLE_RATE）不是一回事：
-    # conversation_manager 用它算 30s 安全上限，filler 用它算截断字节数，tts_server 靠它填 X-Sample-Rate
-    SAMPLE_RATE = 44100
+    # ── 固定的音频与音色参数（不做克隆、不开放切换）──────────────────────────
+    # 输出采样率：Kokoro 声码器的硬约束。状态机用它算发送分片与 30s 安全上限，
+    # filler 用它算截断字节数，/api/info 靠它告诉前端按什么速率播放。
+    SAMPLE_RATE = TTS_SAMPLE_RATE
 
-    def __init__(self, model_dir: str, device: str = "cuda:2",
-                 gpu_memory_utilization: float = 0.55):
-        """保存加载参数，**不加载模型、不碰 CUDA**（延迟到 `load()`）。
+    # 音色：标准美式英语女声。选它的理由 —— 社区评级 A、韵律最自然、
+    # 长段落不易听疲劳，贴合雅思听力陪练场景。
+    # 备选 af_bella / af_nicole / af_sarah 等（见 README 10.2），但本项目不提供切换入口。
+    VOICE = "af_heart"
 
-        `gpu_memory_utilization` 是 nanovllm 的显存预分配比例：既决定 KV cache 大小，
-        也决定留给同卡 ASR/RAG 的余量——TTS 与 ASR 默认同卡，必须留白，经验值 0.45~0.55。
+    # 上游仓库名：仅用于日志/消警告，权重实际从 KOKORO_MODEL_DIR 本地读取
+    UPSTREAM_REPO = "hexgrad/Kokoro-82M"
+
+    # 语言代码由音色名前缀决定（af_* → 'a' 美式英语）。两者必须匹配，写死在这里
+    # 就不存在"配错口音"的可能。
+    LANG_CODE = VOICE.split("_")[0][0]
+
+    def __init__(self, model_dir: str = KOKORO_MODEL_DIR, speed: float = 1.0,
+                 device: str | None = None):
+        """保存配置，**不加载模型、不碰 CUDA**（延迟到 `load()`）。
+
+        `model_dir` 是**本地权重目录**（默认 `models/Kokoro-82M`），里面要有
+        `config.json` / `*.pth` / `voices/<音色>.pt`。**不走 HuggingFace 缓存**。
+        `speed` 是整体语速倍率（雅思听力按自然速 1.0，想让学员听清可用 0.9）。
+        音色与语言代码不可配置，见类常量 `VOICE` / `LANG_CODE`。
         """
         self._model_dir = model_dir
+        self._speed = speed
         self._device = device
-        self._gpu_memory_utilization = gpu_memory_utilization
-        # 后端句柄；load() 之前调用 synthesize*/register_voice 会在 None 上取属性报错，
-        # 调用顺序由 ws_server / tts_server 的启动流程保证
-        self._engine = None
-        self._warmed_up = False  # warmup() 幂等靠这个标志，避免重复付预热代价
-        self._default_prompt_id = None  # None 时 synthesize 走模型自带音色
+        self._pipeline = None          # load() 之前调用 synthesize* 会在 None 上取属性报错
+        self._warmed_up = False        # warmup() 幂等靠这个标志
 
     def load(self):
-        """把 VoxCPM 1.5 加载到目标 GPU（阻塞，数秒到数十秒），返回 self 以便链式调用。
+        """从**本地目录**建 KModel + KPipeline（阻塞：要读 327MB 权重并搬上设备）。
 
-        延迟 import `nanovllm_voxcpm`：这个包依赖 CUDA，只在真要跑 TTS 的进程里才 import，
-        避免单纯 import engine.tts 就触发 GPU 初始化（tts_server.py 正是靠这一点把它放进
-        独立进程，规避 fork-in-fork 的 CUDA 问题）。副作用：初始化 CUDA context 并按
-        gpu_memory_utilization 预分配显存；权重缺失/显存不足/CUDA 不可用时异常向上抛，直接启动失败。
+        为什么不直接把本地路径当 `repo_id` 传：Kokoro 内部用
+        `hf_hub_download(repo_id=...)` 取 `config.json` 和 `voices/*.pt`，
+        `repo_id` 只能是 Hub 上的仓库名。所以这里自己 new 出 `KModel`（它接受本地
+        `config` / `model` 路径）再交给 `KPipeline(model=...)`；音色也直接传本地
+        `.pt` 路径（`load_single_voice` 见到 `.pt` 就当文件路径用）。**全程不联网**。
+
+        延迟 import `kokoro`：这个包会拉起 torch，只在真要跑 TTS 的进程里才 import。
+        Kokoro 只认 'cuda' / 'cpu' 这种粗粒度设备名，不认 'cuda:1'；
+        选哪张物理卡请用 CUDA_VISIBLE_DEVICES（启动脚本已经这么做了）。
         """
-        # 延迟导入：只有真正加载模型时才拉起 CUDA 相关依赖
-        from nanovllm_voxcpm import VoxCPM
-        # 从 "cuda:2" 里取出 2 作为**进程内**可见设备序号；不带冒号回退为 0。
-        # 若外部用 CUDA_VISIBLE_DEVICES 限制可见卡，这里就是"可见卡内序号"：
-        # CUDA_VISIBLE_DEVICES=2 + device="cuda:0" 指向物理 2 号卡（tts_server 用法）。
-        gpu_idx = int(self._device.split(":")[-1]) if ":" in self._device else 0
-        self._engine = VoxCPM.from_pretrained(
-            model=self._model_dir,
-            gpu_memory_utilization=self._gpu_memory_utilization,
-            devices=[gpu_idx],  # 后端要求设备序号列表，而不是字符串
+        from pathlib import Path
+
+        import torch
+        # ── 先把本地 spaCy 模型挂上 sys.path，再构造 KPipeline ──
+        # misaki 的英文 G2P 会 `spacy.load("en_core_web_sm")`；找不到包时它会
+        # `spacy.cli.download()` 现场联网（GitHub raw 通常不可达，报错还跟 TTS 毫无关系）。
+        # 必须有 dist-info 才能让 `spacy.util.is_package()` 命中，所以目录要解压到
+        # models/en_core_web_sm/（内含 en_core_web_sm/ 与 *.dist-info/）。
+        # 放在这里而不是 server/bootstrap.py：这样任何直接用 engine.tts 的脚本
+        # 也能跑，不依赖"必须经由服务进程启动"。
+        import sys as _sys
+        _spacy_dir = Path(KOKORO_MODEL_DIR).parent / "en_core_web_sm"
+        if _spacy_dir.is_dir() and str(_spacy_dir) not in _sys.path:
+            _sys.path.insert(0, str(_spacy_dir))
+
+        from kokoro import KModel, KPipeline
+
+        model_dir = Path(self._model_dir)
+        config_path = model_dir / "config.json"
+        # 权重文件名随版本变化（kokoro-v1_0.pth 等），按扩展名找更稳
+        weights = sorted(model_dir.glob("*.pth"))
+        voice_path = model_dir / "voices" / f"{self.VOICE}.pt"
+        missing = [str(p) for p in (config_path, voice_path) if not p.is_file()]
+        if not weights:
+            missing.append(str(model_dir / "*.pth"))
+        if missing:
+            raise FileNotFoundError(
+                f"Kokoro 权重目录不完整: {model_dir}\n"
+                f"  缺少: {', '.join(missing)}\n"
+                f"  获取方式: huggingface-cli download hexgrad/Kokoro-82M "
+                f"--local-dir {model_dir}"
+            )
+
+        # 设备：cuda → 'cuda'；cuda:N → 'cuda'（物理卡由 CUDA_VISIBLE_DEVICES 选）；其它 → cpu
+        device = self._device
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        elif device.startswith("cuda"):
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    f"TTS_DEVICE={device} 但 CUDA 不可用。"
+                    "检查驱动，或显式用 TTS_DEVICE=cpu"
+                )
+            device = "cuda"
+        else:
+            device = "cpu"
+
+        # 传 repo_id 只为消掉 Kokoro 内部的 "Defaulting repo_id" 提示：
+        # 权重和音色都走本地路径，这个值不会被用来下载任何东西。
+        kmodel = KModel(repo_id=self.UPSTREAM_REPO,
+                        config=str(config_path), model=str(weights[0]))
+        self._pipeline = KPipeline(
+            lang_code=self.LANG_CODE,
+            repo_id=self.UPSTREAM_REPO,
+            model=kmodel.to(device).eval(),
         )
+        # 音色用本地 .pt 的**绝对路径**：KPipeline 见到 .pt 就直接 torch.load，不查 Hub
+        self._voice_path = str(voice_path)
+        log.info("Kokoro TTS loaded (dir=%s, lang=%s, voice=%s, speed=%.2f, device=%s)",
+                 model_dir, self.LANG_CODE, self.VOICE, self._speed, device)
         return self
-
-    def register_voice(self, wav_path: str, prompt_text: str) -> str:
-        """用"参考音频 + 该音频的转写文本"注册克隆音色，返回 prompt_id。
-
-        VoxCPM 是零样本 TTS：参考音频提供音色/口音/语速，参考文本让模型把音频对齐到文字，
-        两者必须严格对应，否则克隆出的音色会飘。prompt 注册进后端后可反复复用，
-        所以只在启动期注册一次；**想换音色素材必须重启进程**（后端没有替换/反注册接口）。
-        注意：格式只按后缀判断且**只识别 .mp3 / .flac，其余一律当 wav**，
-        传 .m4a/.ogg 会被按 wav 解析而失败；文件不存在时 FileNotFoundError。
-        """
-        # 以二进制读整份音频：后端要的是原始字节，自己负责解码
-        with open(wav_path, "rb") as f:
-            wav_bytes = f.read()
-
-        fmt = "wav"  # 默认按 wav 解析（与 config.VOICE_PROMPT_WAV 的后缀一致）
-        # 后端按字符串选解码器，填错即失败，所以不做"猜格式"
-        if wav_path.endswith(".mp3"):
-            fmt = "mp3"
-        elif wav_path.endswith(".flac"):
-            fmt = "flac"
-
-        prompt_id = self._engine.add_prompt(wav_bytes, fmt, prompt_text)
-        # 只打文件名不打全路径：日志更短，也避免泄漏本机目录结构
-        log.info("Voice prompt registered: id=%s, file=%s", prompt_id, os.path.basename(wav_path))
-        return prompt_id
-
-    def set_default_voice(self, prompt_id: str):
-        """把 prompt_id 设为后续合成的默认音色；**不校验 id 是否存在**，传错要等合成时才由后端报错。"""
-        self._default_prompt_id = prompt_id  # 只存引用，prompt 数据仍在后端引擎里
-        log.info("Default voice set to: %s", prompt_id)
 
     def warmup(self):
         """预热：跑一次最短合成（幂等），把首次推理的一次性开销提前付掉。
 
-        第一次 `generate()` 还要额外付 CUDA context 初始化、cuBLAS/cuDNN autotune、
-        KV cache 首次分配、VAE 解码器首次图构建等成本（几百 ms~秒级）；不预热它们会叠加在
-        第一轮真实对话的 ttfa 上、直接击穿 600ms 首响预算。启动流程在开始服务前调用。
-        副作用：触发一次真实 GPU 推理（阻塞数百 ms~秒级），成功后置 `_warmed_up`。
+        第一次合成还要付 torch 算子/推理图初始化、权重搬到显存的成本（几百 ms）；
+        不预热它们会叠加在第一轮真实对话的 ttfa 上、直接击穿 600ms 首响预算。
         """
-        if not self._warmed_up:  # 幂等：即使被多次调用也只付一次成本
-            # 用一句极短中文问候做预热文本，长度接近真实首句，让预热代价贴近线上第一句
-            self.synthesize("你好，欢迎致电。")
-            # 合成成功后才置位：失败时下次调用仍会重试，不会被误标为已预热
-            self._warmed_up = True
+        if not self._warmed_up:
+            # 用一句极短英文做预热文本，长度接近真实首句
+            self.synthesize("Hello, how can I help you?")
+            self._warmed_up = True   # 成功后才置位：失败时下次仍会重试
 
-    def synthesize(self, text: str, prompt_id: str = None) -> dict:
+    def synthesize(self, text: str) -> dict:
         """非流式整句合成，返回 dict（audio / sr / ttfa_ms / total_ms / chunks）。
 
-        给"不适合流式"的场景用：启动期预合成 filler、standalone tts_server 的 /synthesize。
-        主链路请用 `synthesize_stream()`，否则会把首帧延迟藏到整句合成完之后。
-        首 chunk 被丢弃：VoxCPM 的第一个 chunk 是 **VAE 启动瞬态**（上电阶段的咔哒/爆音），
-        整块跳过；第二个 chunk 才是首个可听块，对它做 10ms 线性淡入避免硬切爆点。
-        因此 `ttfa_ms` 记的是"第一个 chunk（含被丢弃的那个）"的到达时刻，与 README 174ms 同口径。
-        `audio` 是未量化的裸 PCM；后端一个 chunk 都没产出时是空数组，调用方需自行判断。
-        副作用：触发一次完整 GPU 自回归推理（阻塞当前线程）；**原地修改**第二个 chunk 的前 10ms。
+        给"不适合流式"的场景用：启动期预合成 filler。主链路请用 `synthesize_stream()`。
+        Kokoro 按内部标点把文本切成若干段、每段一次性出音频，所以 `chunks` = 段数。
+        `audio` 是未量化的 float32 裸 PCM；文本为空时是空数组，调用方需自行判断。
         """
         t0 = time.perf_counter()
         chunks = []
-        ttfa = None  # 首 chunk 到达时刻（ms）；None 表示还没出现过任何 chunk
-
-        pid = prompt_id or self._default_prompt_id
-        # temperature=0.7 比 LLM 低得多：TTS 要的是稳定复现同一音色，温度高会让音色/韵律每句都漂。
-        # cfg_value=3.0 是 CFG 强度：越大越"贴"参考音色但可能发闷，3.0 是自然度与相似度的折中。
-        kwargs = {"target_text": text, "temperature": 0.7, "cfg_value": 3.0}
-        # 只有拿到有效 prompt 才传 prompt_id：传 None 会让后端按"无参考"处理，与省略该参数未必等价
-        if pid:
-            kwargs["prompt_id"] = pid
-
-        chunk_idx = 0  # 先自增，于是第一个 chunk 的 chunk_idx == 1
-        for audio_chunk in self._engine.generate(**kwargs):
-            # 后端一般直接给 CPU 上的 np.ndarray（零拷贝）；torch.Tensor 需先搬 CPU 才能转 numpy
-            if isinstance(audio_chunk, np.ndarray):
-                c = audio_chunk
-            elif hasattr(audio_chunk, 'numpy'):
-                c = audio_chunk.numpy()
-            else:
-                c = np.array(audio_chunk, dtype=np.float32)
-
-            chunk_idx += 1
-            if chunk_idx == 1:
-                ttfa = (time.perf_counter() - t0) * 1000  # README 里 TTS ≈174ms 的口径
-                # Skip first chunk entirely — VoxCPM VAE has startup transient
-                # （保留原注释）VAE 上电瞬态，整块丢弃，不参与拼接也不送播放
-                continue
-
-            if chunk_idx == 2:  # 首个可听块：只对它做起音淡入，并让它携带 ttfa
-                # Fade-in on the second chunk (now the first audible one)
-                # （保留原注释）丢弃首块后这块成了真正起音，硬切会有爆点。
-                # 10ms = 44100 × 0.01 = 441 点，短到听不出音量变化，又足够压掉跳变的"啪"声。
-                fade = int(self.SAMPLE_RATE * 0.01)
-                if len(c) > fade:
-                    # dtype=c.dtype 避免 float32 被 linspace 默认的 float64 提升。
-                    # 注意这是**原地修改**：后端 yield 的数组若被它自己复用会污染后端状态；
-                    # 当前每块都是独立数组所以安全，换后端时要留意。
-                    c[:fade] *= np.linspace(0, 1, fade, dtype=c.dtype)
-
-            chunks.append(c)  # 只有非首块才入列，顺序即播放顺序
+        ttfa = None
+        for seg_audio in self._generate(text):
+            if ttfa is None:
+                ttfa = (time.perf_counter() - t0) * 1000   # 首个音频段到达时刻
+            chunks.append(seg_audio)
 
         total = (time.perf_counter() - t0) * 1000
-        # 一个 chunk 都没有时给空数组，避免 np.concatenate 对空列表抛 ValueError
         audio_out = np.concatenate(chunks) if chunks else np.array([], dtype=np.float32)
-
-        return {  # 波形 / 采样率 / 首帧延迟 / 总耗时 / 有效块数
+        return {
             "audio": audio_out,
             "sr": self.SAMPLE_RATE,
-            # ttfa 为 None（后端没产出任何 chunk）时退化成 total，保证下游拿到的永远是有限数
-            "ttfa_ms": ttfa or total,
+            "ttfa_ms": ttfa or total,   # 无产出时退化成 total，保证下游永远拿到有限数
             "total_ms": total,
-            "chunks": len(chunks),  # 已排除被丢弃的首块
+            "chunks": len(chunks),
         }
 
-    def synthesize_stream(self, text: str, prompt_id: str = None):
-        """流式合成：边生成边 yield，每个 chunk 一个 dict（audio / chunk_idx / ttfa_ms）。
+    def synthesize_stream(self, text: str):
+        """流式合成：边生成边 yield，每个音频段一个 dict（audio / chunk_idx / ttfa_ms）。
 
-        "160ms 精确打断"落在调用方：conversation_manager 每拿到一个 chunk 就立即下发裸 PCM，
-        并在**每个 chunk 之前**检查取消标志，用户一开口就 break。所以打断粒度 = 一个 chunk 的
-        播放时长（README 标称 ~160ms），而且取消只停"下发"、不会掐断已跑起来的 TTS 推理。
-        块处理与 `synthesize()` 相同（丢弃首块瞬态 + 第二块 10ms 淡入），区别是不收集、不拼接、
-        不统计 total；`chunk_idx` 从 2 开始（1 是被丢弃的瞬态块），`ttfa_ms` 只在首个可听块上给真实值。
-        本函数是**生成器**：不迭代就不会跑推理；首次迭代触发流式 GPU 推理并阻塞当前线程。
+        "160ms 精确打断"落在调用方：conversation_manager 每拿到一段就立即下发裸 PCM，
+        并在**每段之前**检查取消标志，用户一开口就 break。所以打断粒度 = 一个音频段的
+        播放时长（Kokoro 按句切段，通常 1~3s，比旧版 VoxCPM 的块更粗）。
+        本函数是**生成器**：不迭代就不会跑推理。
         """
-        t0 = time.perf_counter()  # ttfa_ms 从"进入本函数"算起，含建 prompt + 首帧推理
-        ttfa = None
-
-        pid = prompt_id or self._default_prompt_id
-        # 采样参数与 synthesize() 保持一致，保证流式/非流式音色相同
-        kwargs = {"target_text": text, "temperature": 0.7, "cfg_value": 3.0}
-        if pid:
-            kwargs["prompt_id"] = pid
-
-        chunk_idx = 0
-        for audio_chunk in self._engine.generate(**kwargs):
-            if isinstance(audio_chunk, np.ndarray):
-                c = audio_chunk
-            elif hasattr(audio_chunk, 'numpy'):  # torch.Tensor：需搬到 CPU 才能转 numpy
-                c = audio_chunk.numpy()
-            else:
-                c = np.array(audio_chunk, dtype=np.float32)
-
-            chunk_idx += 1
-            if chunk_idx == 1:
-                # 记录真正的首帧时间；这块随后被丢弃（不 yield），所以 ttfa_ms 会挂到下一块上
-                ttfa = (time.perf_counter() - t0) * 1000
-                # 丢弃首块（VAE 启动瞬态）。这里是 continue 而不是 break：继续向下产出真正的音频
-                continue
-
-            if chunk_idx == 2:  # 首个可听块：10ms 淡入消爆点，且只有它带 ttfa_ms（44100 × 0.01 = 441 点）
-                fade = int(self.SAMPLE_RATE * 0.01)
-                if len(c) > fade:
-                    c[:fade] *= np.linspace(0, 1, fade, dtype=c.dtype)  # 原地乘斜坡，dtype 跟随音频块保精度
-
-            # 逐个 yield 会挂起生成器、把控制权交回 conversation_manager，
-            # 它此时就发这块并检查取消标志 → 这正是打断能及时生效的原因
+        idx = 0
+        t0 = time.perf_counter()
+        for seg_audio in self._generate(text):
+            idx += 1
             yield {
-                "audio": c,
-                "chunk_idx": chunk_idx,  # 已含"第 1 块被丢弃"的信息，便于日志里对照
-                # 只有首个可听块带 ttfa；其余用 0 表示无意义，避免下游误读成每块都这么慢
-                "ttfa_ms": ttfa if chunk_idx == 2 else 0,
+                "audio": seg_audio,
+                "chunk_idx": idx,
+                # 只有首段带 ttfa；其余用 0 表示无意义，避免下游误读成每段都这么慢
+                "ttfa_ms": (time.perf_counter() - t0) * 1000 if idx == 1 else 0,
             }
+
+    def _generate(self, text: str):
+        """内部：调 Kokoro 逐段产出 float32 一维数组；空文本直接不产出。
+
+        KPipeline 的签名是 `pipeline(text, voice=..., speed=...)`，yield `(gs, ps, audio)`：
+        gs=字形串、ps=音素串（都只用于调试），audio 是 torch.Tensor（可能在 CPU 上）。
+        首段做一个 5ms 淡入，避免硬切起音的"啪"声——**只淡入、绝不丢弃**。
+        """
+        text = (text or "").strip()
+        if not text or self._pipeline is None:
+            return
+
+        first = True
+        for _gs, _ps, audio in self._pipeline(
+            text, voice=self._voice_path, speed=self._speed
+        ):
+            a = self._to_np(audio)
+            if a.size == 0:
+                continue
+            # 本段是本次合成的首段 → 淡入。5ms = 24000 × 0.005 = 120 点，
+            # 短到听不出音量变化，又能压掉起音爆点。每次调用都会重新淡入（first 是局部变量）。
+            if first:
+                fade = int(self.SAMPLE_RATE * 0.005)
+                if a.size > fade:
+                    a[:fade] *= np.linspace(0, 1, fade, dtype=a.dtype)
+                first = False
+            yield a
+
+    @staticmethod
+    def _to_np(audio) -> np.ndarray:
+        """把 torch.Tensor / list / ndarray 统一成 float32 一维 ndarray。"""
+        if isinstance(audio, np.ndarray):
+            return audio.astype(np.float32, copy=False).reshape(-1)
+        if hasattr(audio, "detach"):        # torch.Tensor
+            audio = audio.detach().cpu().numpy()
+            return audio.astype(np.float32, copy=False).reshape(-1)
+        return np.asarray(audio, dtype=np.float32).reshape(-1)

@@ -1,10 +1,11 @@
 """Silero VAD 薄封装：逐帧语音概率聚合成 speech_start / speech_end 端点事件（链路第一级）。"""
 import os
-import torch
+
 import numpy as np
+import torch
 
 class SileroVAD:
-    """逐帧概率 → 端点事件；ws_server.py 在它 / SpeakerAwareVAD / FireRedVADWrapper 间三选一装配。"""
+    """逐帧概率 → 端点事件；**本项目唯一的 VAD 实现**（Silero，模型 snakers4/silero-vad）。"""
 
     def __init__(self, model_dir: str, threshold: float = 0.5):
         """只保存配置，不加载模型。

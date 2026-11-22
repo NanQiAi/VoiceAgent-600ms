@@ -1,18 +1,20 @@
-"""SenseVoiceSmall ASR（FunASR）—— ASR 环节的默认实现，**不是** ASR 工厂。
+"""SenseVoiceSmall ASR（FunASR）—— **本项目唯一的 ASR 实现**（没有工厂、没有多后端分支）。
 
-开关在 ws_server.load_engines()（USE_FIRERED_ASR=1 → engine/asr_firered.py）。契约：load() 预热
-返回 self；transcribe(audio, sr=16000) → {"text", "latency_ms"}，audio 为 float32 [-1,1] 单声道
-(N,)，sr 固定 16k 且本实现不使用，text 可为空串且不 strip；**同步阻塞**，调用方须放进线程池。
+契约：load() 预热并返回 self；transcribe(audio, sr=16000) → {"text", "latency_ms"}，
+audio 为 float32 [-1,1] 单声道 (N,)，sr 固定 16k 且本实现不使用，text 可为空串且不 strip；
+**同步阻塞**，调用方须放进线程池。
 """
 import time
 # os：历史遗留导入，本文件已不使用（保留原样不删）
-import os
 import numpy as np
 
 
 class SenseVoiceASR:
     def __init__(self, model_dir: str, device: str = "cuda:2"):
-        """只记配置；model_dir 缺 config.yaml/model.pt 会在 load() 报错，device 默认 "cuda:2" 只是历史值（ws_server 实际传 ASR_DEVICE）。"""
+        """只记配置；model_dir 缺 config.yaml/model.pt 会在 load() 报错。
+
+        device 默认 "cuda:2" 只是历史值，实际由 engine/server/loader.py 传 ASR_DEVICE。
+        """
         self._model_dir = model_dir
         self._device = device
         self._model = None

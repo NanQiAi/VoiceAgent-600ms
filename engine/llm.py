@@ -1,8 +1,12 @@
-"""LLM 推理：通过 vLLM 的 OpenAI 兼容 API 做流式/非流式对话（只是 HTTP 客户端，不加载权重）。
+"""LLM 推理：通过 **OpenAI 兼容**的 HTTP API 做流式/非流式对话（只是客户端，不加载权重）。
 
+走 **DeepSeek 官方 API**（`deepseek-flash`，见 config.py §4）。协议是 OpenAI 兼容的，
+所以换任何兼容服务只要改 `LLM_BASE_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY`。
+本项目**不支持本地大模型**（vLLM / Qwen3 那套已整体移除）。
 `chat()` 等整段回答（评测用）；`stream_sentences()` 把 delta 拼成完整句子逐句 yield，
 主链路用后者——首句一凑齐就送 TTS。多轮历史由本类维护，超出上限的旧轮次压成中文摘要。
-ws_server 为**每个 WebSocket 会话**新建一个实例；同一实例不要并发调用 `stream_sentences()`。
+engine/server/routes_voice.py 为**每个 WebSocket 会话**新建一个实例；
+同一实例不要并发调用 `stream_sentences()`。
 """
 # re：清洗模型输出（去 think 块 / XML 标记）与断句都靠预编译正则，模块级编译一次、全程复用
 import re
@@ -10,8 +14,11 @@ import re
 import time
 # httpx：不是用来直接发请求的，而是为了构造分项超时对象 httpx.Timeout 再交给 OpenAI 客户端
 import httpx
-# OpenAI：vLLM 暴露 OpenAI 兼容接口，所以直接复用官方 SDK；换任何兼容后端都不用改本文件
+# OpenAI：DeepSeek 暴露 OpenAI 兼容接口，所以直接复用官方 SDK；
+# 换任何兼容服务都不用改本文件
 from openai import OpenAI
+
+from config import (LLM_API_KEY, LLM_BASE_URL, LLM_MAX_HISTORY, LLM_MODEL_NAME)
 
 # <think>...</think>：Qwen3 思考模式下的思维链片段。服务端已用 extra_body 的 enable_thinking=False
 # 关了思考，这里再删一遍是**二次防御**——绝不能让"内心独白"被念给用户听。
@@ -27,32 +34,36 @@ _ANY_XML_TAG_RE = re.compile(r"<\|?[a-zA-Z_/][^>]*\|?>")
 _SENTENCE_END_RE = re.compile(r"[。！？!?；;，,\n]")
 
 
-class VLLMChat:
-    """vLLM Chat Completions 的会话级客户端（一个实例 = 一次通话）。
+class LLMChat:
+    """OpenAI 兼容 Chat Completions 的会话级客户端（一个实例 = 一次通话）。
 
     只负责拼 messages（system + 历史 + 当前输入 + RAG 上下文）→ 发请求 → 解析 → 维护历史；
     不负责 RAG 检索、不负责 TTS，也不持有任何 GPU 资源。
     """
 
-    def __init__(self, base_url: str = "http://localhost:8000/v1",
-                 model: str = "MiniCPM4.1-8B-GPTQ",
-                 system_prompt: str = "", max_history: int = 20):
+    def __init__(self, base_url: str = LLM_BASE_URL,
+                 model: str = LLM_MODEL_NAME,
+                 system_prompt: str = "",
+                 max_history: int = LLM_MAX_HISTORY,
+                 api_key: str = LLM_API_KEY):
         """构造客户端（只建连接池，不发请求），并初始化空的会话上下文。
 
-        `base_url` **必须带 `/v1` 后缀**（生产传 config.VLLM_BASE_URL，默认 8100 端口）；
-        `model` 必须与服务端 `--served-model-name` 一致，否则返回 404（生产值
-        config.VLLM_MODEL_NAME = "Qwen3-14B-AWQ"）；`max_history` 是消息**条**数上限
-        （一问一答算 2 条，生产值 config.LLM_MAX_HISTORY = 30）。构造不发网络请求，失败推迟到第一次调用。
+        生产值全部来自 config.py（LLM_BASE_URL / LLM_MODEL_NAME / LLM_API_KEY）。
+        `model` 必须与服务端一致，否则 404——表现为"Agent 完全不开口"。
+        `max_history` 是消息**条**数上限（一问一答算 2 条，生产值 30）。
+        构造不发网络请求，失败推迟到第一次调用。
         """
-        # api_key 固定 "dummy" 占位：vLLM 默认不校验鉴权，但 openai SDK 在 key 为空时会直接抛错。
         # timeout 用 httpx.Timeout 分段设置而非一个总超时，因为各阶段合理等待量级差很多：
-        #   connect=5.0  建连失败要快速失败，别让用户干等（vLLM 在本机，5s 足够）；
-        #   read=30.0    流式读单个 chunk 的等待上限；prefill 慢或 vLLM 排队时给足余量；
+        #   connect=5.0  建连失败要快速失败，别让用户干等；
+        #   read=30.0    流式读单个 chunk 的等待上限（云端 API 排队时给足余量）；
         #   write=5.0    请求体只有几 KB 文本；pool=10.0 从连接池借连接的等待上限。
         self._client = OpenAI(
-            base_url=base_url, api_key="dummy",
+            base_url=base_url, api_key=api_key or "dummy",
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=10.0),
         )
+        if not api_key:
+            # 早失败：别等第一次对话才在 HTTP 层报 401
+            raise ValueError("DEEPSEEK_API_KEY 为空，请在 .env 或环境变量里设置你的 key")
         self._model = model
         self._system_prompt = system_prompt
         self._history = []  # 元素 {"role": "user"/"assistant", "content": str}，成对追加
@@ -64,6 +75,15 @@ class VLLMChat:
         # 直接换新列表而不是 clear()：杜绝外部还持有旧列表引用时的串音风险
         self._history = []
         self._summary = ""
+
+    @staticmethod
+    def _extra_body() -> dict:
+        """DeepSeek 的"关掉思考模式"私有参数。
+
+        **官方默认是开思考的**，不关会先生成一大段 CoT，"首句可播"晚几百 ms，
+        600ms 预算直接崩。
+        """
+        return {"thinking": {"type": "disabled"}}
 
     def _trim_history(self):
         """Keep last max_history messages; summarize evicted turns into _summary.
@@ -118,14 +138,10 @@ class VLLMChat:
         """
         messages = self._build_messages(user_text, rag_context)  # 每轮现拼，历史与 RAG 都是动态的
         t0 = time.perf_counter()
-        # extra_body 是 openai SDK 的逃生口，用来传 vLLM 私有字段：
-        #   chat_template_kwargs.enable_thinking=False
-        #       —— Qwen3 默认开思考模式，会先生成一大段思维链："首 token"其实不慢，但"首句可播"
-        #          会晚几百 ms，且内容不适合念给用户，所以显式关闭；
-        #   repetition_penalty=1.15
-        #       —— 经验值：电话话术句子短、容易复读同一句，1.15 的轻惩罚能明显减少复读机现象；
-        #          再往上调会伤自然度，故不用更高值。
-        extra_body = {"chat_template_kwargs": {"enable_thinking": False}, "repetition_penalty": 1.15}
+        # extra_body 是 openai SDK 的逃生口，用来传各家私有的"关思考"字段：
+        #   参数是 DeepSeek 专有的 thinking.type=disabled（它默认开思考）。
+        #   具体见 _extra_body()，两种后端的字段名不可混用。
+        extra_body = self._extra_body()
 
         resp = self._client.chat.completions.create(  # 同步阻塞：等整段 decode 完才返回
             model=self._model, messages=messages,
@@ -159,12 +175,12 @@ class VLLMChat:
         messages = self._build_messages(user_text, rag_context)
         t0 = time.perf_counter()  # ttfs_ms 的计时起点，覆盖建连 + prefill + 攒够首句标点
         # 与非流式完全相同的采样与关思考参数，保证两种形态输出风格一致
-        extra_body = {"chat_template_kwargs": {"enable_thinking": False}, "repetition_penalty": 1.15}
+        extra_body = self._extra_body()
 
         stream = self._client.chat.completions.create(  # 返回可迭代的 SSE 流对象，此刻尚无 token
             model=self._model, messages=messages,
             max_tokens=80, temperature=0.85, top_p=0.9,
-            # stream=True：让 vLLM 用 SSE 逐 token 推送，每行形如 data: {"choices":[{"delta":{...}}]}。
+            # stream=True：让服务端用 SSE 逐 token 推送，每行形如 data: {"choices":[{"delta":{...}}]}。
             # 这是 163ms 首 token 能被"利用"的前提——不流式就只能等 80 个 token 全部 decode 完
             # （数百 ms）才拿到第一个字，首响预算直接崩。
             stream=True, extra_body=extra_body,
@@ -176,7 +192,7 @@ class VLLMChat:
         # 首个非空 delta 的到达时刻；当前未参与返回值，保留是为了方便后续接入"纯首 token 延迟"指标
         first_token_time = None
 
-        for chunk in stream:  # 每帧是 vLLM 新 decode 出的若干字符（1 个 delta）
+        for chunk in stream:  # 每帧是新 decode 出的若干字符（1 个 delta）
             # "心跳/结束"帧（choices 为空，或 delta.content 为 None）必须跳过，否则会拼进 None 或下标越界
             if not chunk.choices or not chunk.choices[0].delta.content:
                 continue
