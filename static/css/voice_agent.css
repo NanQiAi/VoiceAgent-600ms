@@ -9,7 +9,8 @@
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; background: var(--bg); color: var(--text); line-height: 1.5; }
-.app { display: grid; grid-template-columns: 1fr 380px; grid-template-rows: auto 1fr auto; height: 100vh; }
+/* 左聊天 : 右指标 = 1 : 1（各占页面宽度的一半） */
+.app { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 1fr auto; height: 100vh; }
 
 .header { grid-column: 1/-1; padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; background: var(--surface); }
 .header h1 { font-size: 20px; background: linear-gradient(135deg, #6c8cff, #22d3ee); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -36,15 +37,12 @@ body { font-family: -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; backgr
 .msg.user .meta { color: rgba(255,255,255,.6); }
 .msg.system { align-self: center; background: none; color: var(--dim); font-size: 12px; padding: 2px 12px; }
 
-.controls { padding: 14px 24px; border-top: 1px solid var(--border); background: var(--surface); display: flex; gap: 12px; align-items: center; }
+/* 控制栏只剩两个按钮：居中显示（原来是 flex:1 的输入框在撑宽度） */
+.controls { padding: 14px 24px; border-top: 1px solid var(--border); background: var(--surface); display: flex; gap: 12px; align-items: center; justify-content: center; }
 .btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all .15s; }
 .btn-call { background: var(--green); color: #000; }
 .btn-call.active { background: var(--red); color: #fff; }
-.btn-send { background: var(--accent); color: #fff; }
 .btn-reset { background: var(--surface2); color: var(--dim); border: 1px solid var(--border); }
-.text-input { flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 14px; outline: none; }
-.text-input:focus { border-color: var(--accent); }
-.text-input::placeholder { color: var(--dim); }
 
 .sidebar { border-left: 1px solid var(--border); background: var(--surface); overflow-y: auto; }
 .sidebar-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }

@@ -51,27 +51,6 @@ export async function toggleCall() {
   el('micStatus').textContent = 'On';
 }
 
-/** 文本输入跳过 ASR 直接进 Pipeline（服务端 _turn++）；顺便借这次用户手势解锁播放链路。 */
-export async function sendTextMessage() {
-  const input = el('textInput');
-  const text = input.value.trim();
-  if (!text) return;
-
-  // 用户可能没点 Start Call 就直接打字：这次点击同样是手势，
-  // 先解锁播放链路再建连（服务端会在建连后播开场白），否则消息发不出去。
-  await ensurePlayerReady();
-  if (!app.socket || app.socket.readyState !== WebSocket.OPEN) connectSocket();
-  try {
-    await waitForSocketOpen(app.socket);
-  } catch (err) {
-    appendMessage('system', 'Connection failed: ' + err.message);
-    return;
-  }
-
-  if (!sendJson({ type: 'text_input', text })) return;
-  input.value = '';
-}
-
 /** 复位会话（清对话历史与状态机，不断连接）。 */
 export function resetSession() {
   sendJson({ type: 'reset' });

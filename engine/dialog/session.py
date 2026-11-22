@@ -1,10 +1,9 @@
 """E2E对话 · 会话生命周期
 
-会话级的入口与计时：主动问候（D1）、空闲超时追赶（D2）、
-以及前端打字输入。
+会话级的入口与计时：主动问候（D1）、空闲超时追赶（D2）。
+（文本输入通道已移除——只保留全双工语音。）
 """
 
-import asyncio
 import logging
 import time
 
@@ -15,54 +14,6 @@ log = logging.getLogger("Voice Agent.cm")
 
 class Session:
     """E2E对话 · 会话生命周期。由 ConversationManager 组合，`self` 上共享整机会话状态。"""
-
-    async def handle_text_input(self, text: str):
-        """处理前端打字输入（协议 `text_input`）：跳过 VAD/ASR，直接走 RAG → LLM → TTS。
-
-        副作用：自增 `_turn`、状态置 THINKING→SPEAKING；下发 state/asr/rag；线程池跑 RAG；起
-        `text-tts-{turn}` 后台任务播报且**不 await**（ws_server 的消息循环要立刻回来继续收消息，用户打字时
-        也可能按打断），代价是返回时播报还在进行，状态由任务自己回收。G2 修复：RAG 失败降级为无上下文。
-        """
-        self._turn += 1
-        self.state = State.THINKING
-        await self._send({"type": "state", "state": "thinking"})
-        await self._send(
-            {"type": "asr", "text": text, "latency_ms": 0, "turn": self._turn, "source": "text"}
-        )
-
-        self._consecutive_empty_asr = 0
-
-        # D4：打字说"再见"也要能正常告别（否则用户只能靠说话结束通话）
-        if any(kw in text for kw in self._farewell_keywords):
-            self._session_ending = True
-            log.info("[Turn %d] Farewell detected (text): '%s'", self._turn, text)
-
-        loop = asyncio.get_event_loop()
-        t_start = time.perf_counter()
-
-        rag_context = ""
-        rag_ms = 0.0
-        try:
-            rag_result = await loop.run_in_executor(None, self.rag.get_context, text)
-            rag_context = rag_result["context"]
-            rag_ms = rag_result["total_ms"]
-        except Exception as e:
-            log.warning("[Turn %d] RAG failed in text_input (degraded): %s", self._turn, e)
-        await self._send({
-            "type": "rag", "context": rag_context,
-            "latency_ms": round(rag_ms, 1), "turn": self._turn,
-        })
-
-        self._cancel_speaking.clear()
-        self._barge_confirm_count = 0
-        self.state = State.SPEAKING
-        await self._send({"type": "state", "state": "speaking"})
-
-        self._speaking_task = self._track_task(
-            self._stream_llm_tts(text, rag_context, self._turn, t_start, 0, rag_ms),
-            name=f"text-tts-{self._turn}",
-        )
-
 
     async def start_greeting(self):
         """D1 开场白：连接建立后由 ws_server 以任务方式启动，主动播报一句问候（期间可被打断）。

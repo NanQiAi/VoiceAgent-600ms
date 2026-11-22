@@ -66,11 +66,10 @@ export const MESSAGE_HANDLERS = {
     setAgentStateBadge(msg.state);
   },
 
-  // 识别结果；source='text' 表示是文本输入的回显
+  // 识别结果（文本输入通道已移除，source 只可能是缺省）
   asr(msg) {
     if (!msg.text) return;
-    const meta = msg.source === 'text' ? 'text input' : `ASR ${msg.latency_ms}ms`;
-    appendMessage('user', msg.text, meta);
+    appendMessage('user', msg.text, `ASR ${msg.latency_ms}ms`);
     el('turnCount').textContent = msg.turn || '';
   },
 

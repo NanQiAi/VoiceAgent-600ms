@@ -1,7 +1,7 @@
 """全双工语音通道 `/ws/voice`：一条 WebSocket 连接 = 一个会话。
 
 上行：二进制帧 = 16kHz 单声道 int16 裸 PCM（512 采样/帧）；
-      文本帧 = JSON 控制消息 `text_input` / `manual_barge_in` / `reset`。
+      文本帧 = JSON 控制消息 `manual_barge_in` / `reset`。
 下行：二进制帧 = 24kHz 单声道 int16 裸 PCM；
       文本帧 = `ready` / `state` / `asr` / `rag` / `llm_sentence` / `llm` / `audio_start` /
               `metrics` / `system_message` / `barge_in` / `session_end` / `error` /
@@ -97,15 +97,7 @@ async def handle_control_message(msg: dict, cm: ConversationManager,
     """处理一条 JSON 控制帧；未知 type 静默忽略（向下兼容前端先行升级）。"""
     msg_type = msg.get("type")
 
-    if msg_type == "text_input":
-        text = msg.get("text")
-        # 缺字段 / 空串：直接忽略（前端半成品帧不该拆掉会话）
-        if not isinstance(text, str) or not text.strip():
-            session_log.warning("text_input without usable text, ignored: %r", msg)
-            return
-        await cm.handle_text_input(text)
-
-    elif msg_type == "manual_barge_in":
+    if msg_type == "manual_barge_in":
         await cm.handle_barge_in()
 
     elif msg_type == "reset":

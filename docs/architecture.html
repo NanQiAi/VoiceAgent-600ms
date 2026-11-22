@@ -218,7 +218,7 @@ const STAGES = [
     shapeIn: "二进制帧（1024 B）",
     shapeOut: "float32 波形片段（512,）",
     file: "server/routes_voice.py :: ws_voice()",
-    what: "一条连接 = 一个会话。二进制帧是音频，文本帧是 JSON 控制消息（text_input / manual_barge_in / reset）。",
+    what: "一条连接 = 一个会话。二进制帧是音频，文本帧 = JSON 控制消息（manual_barge_in / reset）。",
     input: "raw bytes（int16 小端，单声道）",
     output: "float32 波形，范围 [-1, 1]",
     formula: "samples = np.frombuffer(raw, int16) / 32768.0\n（除以 32768 而非 32767，保证 -32768 精确映射到 -1.0）",

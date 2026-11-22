@@ -146,7 +146,7 @@ _run_pipeline()
 | `engine/rag.py` | bge 向量化 + FAISS 检索 + 置信度阈值 | ⭐⭐ |
 | `engine/asr.py` | **唯一的 ASR 实现**（Parakeet-TDT / transformers） | ⭐⭐ |
 | `engine/vad.py` | Silero VAD（CPU） | ⭐⭐ |
-| `static/` | 前端：`voice_agent.html`（88 行骨架）+ `css/` + `js/`（9 个 ES module） | ⭐⭐ |
+| `static/` | 前端：`voice_agent.html`（86 行骨架，只有 Start Call / Reset 两个按钮）+ `css/` + `js/`（9 个 ES module） | ⭐⭐ |
 | `run.sh` | **唯一的启停入口**：配置 + 预检 + 启动 + 守护 + 排障 | ⭐⭐ |
 | `test/test_rag.py` | RAG 检索基准（bge-m3 × 有无 reranker）。10 条英文问句含 8 正例 + 2 负例，输出延迟与**正负例分数间隔**，用于判断阈值是否合理 | ⭐ |
 | `check_deps.py` | 依赖自检：22 必需 + 2 可选，缺必需包时退出码 1 | ⭐ |
@@ -168,7 +168,7 @@ engine/
     transport.py     下行发送
     streaming.py     LLM 句子流 → TTS 音频流
     pipeline.py      一轮对话编排
-    session.py       问候 / 空闲 / 文本输入
+    session.py       问候 / 空闲超时
 ```
 
 ### `server/` 是独立顶层包（不在 `engine/` 里）
@@ -278,7 +278,6 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | 帧 | 含义 |
 |---|---|
 | **二进制** | 16kHz / 单声道 / int16 裸 PCM，**512 采样（32ms）一帧** |
-| `{"type":"text_input","text":"..."}` | 文本输入，跳过 ASR 直接进 pipeline |
 | `{"type":"manual_barge_in"}` | 手动打断（空格键/按钮），不需要 VAD 确认 |
 | `{"type":"reset"}` | 复位会话（清对话历史与状态机） |
 
@@ -318,7 +317,6 @@ THINKING ──用户又开口──> 追加进同一轮，不打断
 | 情况 | 服务端行为 |
 |---|---|
 | 控制帧不是合法 JSON | 记一条 warning，**丢弃该帧**，会话继续 |
-| `{"type":"text_input"}` 缺 `text` 或为空 | 记 warning，丢弃，会话继续 |
 | 二进制帧字节数为奇数（int16 不成立） | 记 warning，丢弃该帧，会话继续 |
 | 未知 `type` | 静默忽略（便于前端先升级） |
 | 其它未预期异常 | 记完整堆栈，`finally` 里注销会话、取消后台任务并**显式 `close()`** |

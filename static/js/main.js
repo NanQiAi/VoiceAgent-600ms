@@ -6,7 +6,7 @@
  */
 
 import { el, renderModelInfo } from './ui.js';
-import { resetSession, sendTextMessage, toggleCall } from './session.js';
+import { resetSession, toggleCall } from './session.js';
 
 /**
  * 侧栏模型清单。
@@ -24,11 +24,7 @@ async function loadModelInfo() {
 
 function bindControls() {
   el('btnCall').addEventListener('click', toggleCall);
-  el('btnSend').addEventListener('click', sendTextMessage);
   el('btnReset').addEventListener('click', resetSession);
-  el('textInput').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') sendTextMessage();
-  });
 }
 
 function init() {
