@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VoiceAgent-600ms · 架构与数据流</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1a1a1a; --dim:#6b6b6b; --line:#d8d8d8;
+    --in-fill:#e8f1fb;  --in-stroke:#2c6cb0;
+    --calc-fill:#fdf6e3;--calc-stroke:#b8860b;
+    --logic-fill:#f2e9f7;--logic-stroke:#6a3d9a;
+    --out-fill:#e9f6ea; --out-stroke:#2e7d32;
+    --hl:#ff7043;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px 20px 48px; background:var(--bg); color:var(--fg);
+    font:15px/1.65 -apple-system,"Segoe UI","Noto Sans SC",Roboto,sans-serif;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 6px;font-weight:650}
+  .sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+  .metrics{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 20px}
+  .metric{border:1px solid var(--line);border-radius:4px;padding:5px 10px;font-size:12.5px;color:var(--dim)}
+  .metric b{color:var(--fg);font-family:var(--mono);font-size:13px}
+
+  .toolbar{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    border:1px solid var(--line);border-radius:5px;padding:12px 14px;margin-bottom:16px;
+  }
+  .toolbar button{
+    font:inherit;font-size:13px;padding:5px 12px;border:1px solid var(--line);
+    background:#fafafa;border-radius:4px;cursor:pointer;color:var(--fg);
+  }
+  .toolbar button:hover:not(:disabled){background:#f0f0f0}
+  .toolbar button:disabled{opacity:.4;cursor:default}
+  .toolbar input[type=range]{flex:1;min-width:220px;accent-color:var(--hl)}
+  .stepno{font-family:var(--mono);font-size:13px;color:var(--dim);min-width:64px}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--dim);margin-bottom:14px}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;border:1.5px solid;margin-right:5px;vertical-align:-1px}
+
+  svg{width:100%;height:auto;display:block;border:1px solid var(--line);border-radius:5px;background:#fff}
+  .node{cursor:pointer}
+  .node rect{transition:stroke-width .12s}
+  .node:hover rect{stroke-width:2.5}
+  .node.active rect{stroke:var(--hl);stroke-width:3}
+  .node .t{font-size:15px;font-weight:600;fill:#1a1a1a}
+  .node .s{font-size:11.5px;fill:#5a5a5a}
+  .side{font-size:11.5px;fill:#6b6b6b;font-family:var(--mono)}
+  .arrow{stroke:#9a9a9a;stroke-width:1.6;fill:none}
+  .arrow-hl{stroke:var(--hl);stroke-width:2.6}
+  .band{font-size:12px;fill:#8a8a8a}
+
+  .panel{border:1px solid var(--line);border-radius:5px;padding:16px 18px;margin:18px 0}
+  .panel h2{font-size:15px;margin:0 0 10px;font-weight:650}
+  .panel .hint{color:var(--dim);font-size:13px;margin:0}
+  .kv{font-size:13.5px;margin:0}
+  .kv dt{color:var(--dim);font-size:12.5px;margin-top:10px}
+  .kv dd{margin:2px 0 0;font-family:var(--mono);font-size:13px;word-break:break-word}
+  .kv dd.txt{font-family:inherit;font-size:13.5px}
+  .formula{
+    background:#fafafa;border:1px solid var(--line);border-left:3px solid var(--calc-stroke);
+    padding:8px 11px;border-radius:3px;font-family:var(--mono);font-size:12.5px;
+    white-space:pre-wrap;margin:6px 0 0;
+  }
+  .subs{margin:6px 0 0;padding-left:18px;font-size:13px}
+  .subs li{margin:3px 0}
+  .subs code{font-family:var(--mono);font-size:12.5px;background:#f5f5f5;padding:1px 4px;border-radius:2px}
+  .tag{display:inline-block;font-size:11.5px;font-family:var(--mono);color:var(--dim);
+       border:1px solid var(--line);border-radius:3px;padding:1px 6px;margin-right:6px}
+  #stepnote{border-left:3px solid var(--hl);background:#fffaf8}
+  #stepnote h2{margin-bottom:6px}
+  #stepnote .body{font-size:14px}
+  #stepnote .body code{font-family:var(--mono);font-size:13px;background:#f5f5f5;padding:1px 4px;border-radius:2px}
+  footer{margin-top:26px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
+  /* ── 对话状态机章节 ── */
+  .smnode{cursor:pointer}
+  .smnode rect{transition:stroke-width .12s}
+  .smnode:hover rect{stroke-width:2.6}
+  .smnode.sel rect{stroke:var(--hl);stroke-width:3}
+  .smlabel{font-size:11.5px;fill:#555}
+  .smnote{font-size:11.5px;fill:#8a8a8a}
+  .tbl{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+  .tbl th,.tbl td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  .tbl th{background:#fafafa;font-size:12.5px;font-weight:600;color:var(--dim)}
+  .tbl td.f{font-family:var(--mono);white-space:nowrap}
+  .tbl code{font-family:var(--mono);font-size:12px;background:#f5f5f5;padding:1px 4px;border-radius:2px}
+  .badge{display:inline-block;font-family:var(--mono);font-size:11.5px;padding:1px 6px;
+         border-radius:3px;border:1px solid var(--line);margin-right:4px}
+  @media (max-width:640px){
+    body{padding:16px 12px 32px}
+    .toolbar{gap:8px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>VoiceAgent-600ms · 架构与数据流</h1>
+  <p class="sub">级联语音对话 Agent：VAD → ASR → RAG → LLM → TTS。下面是**一次真实通话**的完整数据流。</p>
+  <p class="sub">点击任意方块看它的输入/输出、公式与代码位置；用下方滑块或按钮逐帧推进。</p>
+
+  <div class="metrics">
+    <span class="metric">上行 <b>16 kHz</b> · 512 点 / <b>32 ms</b> / 帧</span>
+    <span class="metric">下行 <b>24 kHz</b>（Kokoro 原生）</span>
+    <span class="metric">ASR <b>Parakeet-TDT-0.6B</b></span>
+    <span class="metric">RAG <b>bge-m3 · 1024 维</b></span>
+    <span class="metric">LLM <b>deepseek-flash</b></span>
+    <span class="metric">TTS <b>Kokoro-82M · af_heart</b></span>
+    <span class="metric">首响预算 <b>600 ms</b></span>
+  </div>
+
+  <div class="toolbar">
+    <button id="btnPrev">← 上一步</button>
+    <button id="btnNext">下一步 →</button>
+    <input type="range" id="slider" min="0" max="9" value="0" step="1" aria-label="推演步骤">
+    <span class="stepno" id="stepno">0 / —</span>
+    <button id="btnReset">重置</button>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--in-fill);border-color:var(--in-stroke)"></i>输入</span>
+    <span><i style="background:var(--calc-fill);border-color:var(--calc-stroke)"></i>计算（重活）</span>
+    <span><i style="background:var(--logic-fill);border-color:var(--logic-stroke)"></i>状态机 / 判定逻辑</span>
+    <span><i style="background:var(--out-fill);border-color:var(--out-stroke)"></i>输出</span>
+    <span style="color:#c0392b">橙色描边 = 当前步骤</span>
+  </div>
+
+  <svg id="diagram" viewBox="0 0 1120 1180" role="img" aria-label="VoiceAgent 数据流图"></svg>
+
+  <div class="panel" id="detail">
+    <h2>节点详情</h2>
+    <p class="hint">点上面的方块查看：输入 / 输出 / 关键公式 / 代码位置。复杂阶段还会拆出内部子步骤。</p>
+  </div>
+
+  <div class="panel" id="stepnote">
+    <h2 id="stepTitle">第 0 步</h2>
+    <div class="body" id="stepBody"></div>
+  </div>
+
+  <section id="statemachine">
+    <h1 style="font-size:19px;margin:34px 0 6px">对话状态机</h1>
+    <p class="sub">
+      上面那条链路是「一轮」的数据流；这一节是「一直跑着的」调度器。
+      <code>ConversationManager</code> 每收到一个 32 ms 音频帧，就按当前 state 分派到一个分支 ——
+      它只决定「什么时候做什么」，重活全部委托给引擎。
+    </p>
+    <p class="sub">点下面的状态方块查看：含义 / 进入条件 / 每帧行为 / 离开条件 / 代码位置。</p>
+
+    <svg id="smdiagram" viewBox="0 0 1120 600" role="img" aria-label="对话状态机迁移图"></svg>
+
+    <div class="panel" id="smdetail">
+      <h2>状态详情</h2>
+      <p class="hint">点上面的状态方块查看细节。</p>
+    </div>
+
+    <div class="panel">
+      <h2>全部迁移（含图上未画出的）</h2>
+      <p class="hint">图里只画了主循环和两条打断回路；下表是代码里所有会改写 <code>state</code> 的地方。</p>
+      <div id="smtable"></div>
+    </div>
+  </section>
+
+  <footer>
+    数值与路径均取自当前代码：<code>config.py</code>、<code>engine/dialog/constants.py</code>、
+    <code>engine/asr.py</code>、<code>engine/rag.py</code>、<code>engine/llm.py</code>、<code>engine/tts.py</code>、
+    <code>server/*.py</code>。若与代码不符，以代码为准。
+  </footer>
+
+</div>
+
+<script>
+"use strict";
+
+/* ─────────────────────────────────────────────────────────────
+   阶段定义：每个阶段 = 图上一个方块 + 一份详情 + 一步推演说明
+   kind: in（输入）/ calc（计算）/ logic（判定）/ out（输出）
+   ───────────────────────────────────────────────────────────── */
+const STAGES = [
+  {
+    id: "boot", title: "启动装配", kind: "in",
+    shapeIn: "磁盘上的权重目录",
+    shapeOut: "全局引擎注册表 runtime.engine",
+    file: "ws_server.py → server/loader.py",
+    what: "进程启动时一次性装配全部引擎，装配完才开始收连接。每个 WebSocket 连接复用这些共享实例（VAD / LLM 除外，见下一步）。",
+    input: "models/ 下的 5 份权重（Parakeet / bge-m3 / Silero VAD / Kokoro / spaCy）",
+    output: "runtime.engine = {asr, rag, tts, filler, vad_template, spec_asr, llm_factory}",
+    formula: "顺序（先轻后重）：VAD → ASR → RAG(建索引) → LLM 工厂 → TTS(预热) → filler(预合成)",
+    subs: [
+      { n: "代码分层", note: "<code>config.py</code>（唯一参数源）→ <code>engine/</code>（引擎 + 状态机）→ <code>server/</code>（HTTP/WS）→ <code>ws_server.py</code>（入口）" },
+      { n: "RAG 建索引", note: "59 条 KB 一次性编码成 (59, 1024) 矩阵，写入内存 FAISS，约 2 s（只在启动期付一次）" },
+      { n: "TTS 预热", note: "先合成一句极短文本，把 kernel/显存的一次性开销挪到启动期，避免第一句话慢" }
+    ],
+    note: "只有 `python ws_server.py` 会调 load_engines()；用 `uvicorn ws_server:app` 直接加载模块时注册表为空，接口只能降级返回空数据。",
+    code: "server/loader.py :: load_engines()"
+  },
+  {
+    id: "mic", title: "麦克风采集", kind: "in",
+    shapeIn: "浏览器 MediaStream",
+    shapeOut: "Float32 → Int16，1024 字节/帧",
+    file: "static/js/audio.js",
+    what: "浏览器用 AudioContext 以 16 kHz 采集，AudioWorklet 在音频线程里按 512 点切帧后立刻发走。",
+    input: "navigator.mediaDevices.getUserMedia({audio:{ sampleRate:16000, echoCancellation:true }})",
+    output: "每帧 512 个 int16 → 1024 字节（二进制帧）",
+    formula: "512 点 ÷ 16000 Hz = 0.032 s = 32 ms/帧\n1024 字节 ÷ 32 ms ⇒ 32 kB/s 上行",
+    subs: [
+      { n: "回声消除", note: "echoCancellation 是双工打断的前提，否则 TTS 会被麦克风收回、被当成用户插话" },
+      { n: "为什么 16 kHz", note: "VAD / ASR 的时频特征都在 16 kHz 上训练；采样率错配不会报错，只会让识别率变差" }
+    ],
+    note: "AudioContext 必须在用户手势（点 Start Call）里创建并 resume，否则停在 suspended —— 表现为“能连上但没声音”。",
+    code: "static/js/audio.js :: startCapture()"
+  },
+  {
+    id: "ws", title: "WebSocket 上行", kind: "in",
+    shapeIn: "二进制帧（1024 B）",
+    shapeOut: "float32 波形片段（512,）",
+    file: "server/routes_voice.py :: ws_voice()",
+    what: "一条连接 = 一个会话。二进制帧是音频，文本帧是 JSON 控制消息（text_input / manual_barge_in / reset）。",
+    input: "raw bytes（int16 小端，单声道）",
+    output: "float32 波形，范围 [-1, 1]",
+    formula: "samples = np.frombuffer(raw, int16) / 32768.0\n（除以 32768 而非 32767，保证 -32768 精确映射到 -1.0）",
+    subs: [
+      { n: "每连接新建 VAD", note: "Silero 内部保存流式隐状态，共享会互相污染；重新 load 成本很低" },
+      { n: "每连接新建 LLM", note: "LLMChat 持有对话历史，共享会让两个用户上下文串台" },
+      { n: "畸形帧容错", note: "奇数长度帧、非法 JSON、缺字段都只丢当前帧，不拆会话" }
+    ],
+    note: "会话 id 用 uuid4 前 12 位而非毫秒时间戳 —— 同毫秒内建两个连接会撞 id，先断开的那个会把对方从会话表里 pop 掉。",
+    code: "server/routes_voice.py :: ws_voice()"
+  },
+  {
+    id: "vad", title: "VAD 逐帧判语音", kind: "calc",
+    shapeIn: "float32（512,）",
+    shapeOut: "speech_prob ∈ [0,1]",
+    file: "engine/vad.py",
+    what: "Silero VAD 每 32 ms 给出“这一帧是人声”的概率。跑在 CPU 上（模型很小），不占显存。",
+    input: "float32 波形（必须正好 512 点 @16 kHz）",
+    output: "{ speech_prob: float }",
+    formula: "prob = silero_vad(x[None, :], 16000)\n状态机侧门限：is_speech = prob >= 0.6",
+    subs: [
+      { n: "注意 0.5 vs 0.6", note: "<code>SileroVAD(threshold=0.5)</code> 只驱动 VAD 内部无人消费的端点事件；真正生效的是状态机里硬编码的 <b>0.6</b>" },
+      { n: "能量双门限", note: "IDLE 分支还要求 RMS &gt; 0.015，滤掉风扇/空调底噪" }
+    ],
+    note: "VAD 固定跑 CPU（map_location=\"cpu\"），避免和 ASR/TTS 抢显存。",
+    code: "engine/vad.py :: process_chunk()"
+  },
+  {
+    id: "sm", title: "状态机：判停 / 打断", kind: "logic",
+    shapeIn: "speech_prob + rms + 帧时序",
+    shapeOut: "状态迁移 / 判停触发的音频段",
+    file: "engine/dialog/manager.py",
+    what: "五种状态 IDLE / LISTENING / THINKING / SPEAKING / INTERRUPTED，按当前状态分派到五个分支。它是唯一决定“什么时候做什么”的地方。",
+    input: "每帧 (chunk, speech_prob, rms)",
+    output: "判停 → 冻结整轮音频数组；或触发打断",
+    formula: "判停：静音帧数 ≥ threshold\n  本次说话 0.5~3 s → 13 帧 ≈ 416 ms\n  其余（很短 / 很长）→ 20 帧 ≈ 640 ms\n\n打断（仅 SPEAKING）：prob ≥ 0.6 且 rms > 0.012，连续 2 帧 ≈ 64 ms\n打断后静音 10 帧 ≈ 320 ms 才继续处理后半句",
+    subs: [
+      { n: "投机 ASR", note: "静音满 5 帧（≈160 ms）且未判停 → 先跑一次 ASR，判停时音频没变长就直接复用" },
+      { n: "文本累积", note: "≤4 字符的极短结果先缓存，3 s 内没新语音才强制下发，避免 VAD 误切浪费一轮" },
+      { n: "Turn 序列号", note: "每轮 audio_start(turn=N)，前端据此丢弃旧轮次的迟到音频" }
+    ],
+    note: "打断有两条路径，去向不同：VAD 自动打断 → INTERRUPTED；手动打断（manual_barge_in）→ 直接回 LISTENING。5 个状态与全部迁移见下方「对话状态机」章节。",
+    code: "engine/dialog/manager.py :: _process_chunk()"
+  },
+  {
+    id: "asr", title: "ASR 转写", kind: "calc",
+    shapeIn: "float32 整轮波形 (N,)",
+    shapeOut: "text: str",
+    file: "engine/asr.py",
+    what: "Parakeet-TDT-0.6B（NVIDIA），用 transformers 原生实现加载，不需要 NeMo。整段音频一次性转写。",
+    input: "numpy float32 (N,)，16 kHz 单声道",
+    output: "{ text: str, latency_ms: float }",
+    formula: "特征：log-mel → input_features (1, T, 128)，T ≈ 音频秒数 × 100\n编码器 → TDT 解码器（Token-and-Duration Transducer）→ token ids\n输出 token → 文本（含标点与大小写）",
+    subs: [
+      { n: "权重", note: "<code>models/parakeet-tdt-0.6b-v3</code>：<code>model.safetensors</code>（约 2.5 GB）+ <code>tokenizer.json</code>" },
+      { n: "实测", note: "CPU 上 3.7 s 音频约 180 ms（≈20× 实时）；GPU 更快" },
+      { n: "标签剥离", note: "下游会用正则剥掉 <code>&lt;|zh|&gt;</code> 这类富文本标签——Parakeet 不产出，属于防御性兜底" }
+    ],
+    note: "契约：同步阻塞，调用方必须放进线程池（run_in_executor），否则会卡住整个事件循环。",
+    code: "engine/asr.py :: ParakeetASR.transcribe()"
+  },
+  {
+    id: "rag", title: "RAG 检索", kind: "calc",
+    shapeIn: "text（用户这句话）",
+    shapeOut: "context: str（拼接好的前 3 条）",
+    file: "engine/rag.py",
+    what: "把问题编码成向量，在 59 条知识库里做余弦检索，取 top-3 拼成上下文注入 LLM 的提示词。",
+    input: "question: str",
+    output: "{ context: str, results: [...], embed_ms, search_ms, total_ms }",
+    formula: "q = encode(text, normalize=True)              # (1024,)\nscores, idx = faiss.IndexFlatIP.search(q, k=3)  # 归一化后内积 = 余弦\ntop = [d for s, d in zip(scores, idx) if s >= 0.35]\ncontext = \"Q: … A: …\" 逐条拼接（上限 800 字）",
+    subs: [
+      { n: "bge-m3", note: "568M / 1024 维 / 单次查询约 40 ms（CPU），多语言召回强" },
+      { n: "索引在内存", note: "每次启动重建（59 条约 2 s），热更新用 POST /api/rag/reload" },
+      { n: "阈值只管“明显不相关”", note: "实测正例 0.486~0.800、负例 0.454~0.477 —— 可分离窗口极窄，不能靠阈值判断“知识库有没有答案”" }
+    ],
+    note: "RAG 失败会降级为“无上下文”继续回答，不会中断这一轮。",
+    code: "engine/rag.py :: query() / get_context()"
+  },
+  {
+    id: "llm", title: "LLM 流式生成", kind: "calc",
+    shapeIn: "system prompt + RAG context + 对话历史",
+    shapeOut: "逐句 yield 的句子流",
+    file: "engine/llm.py",
+    what: "调 DeepSeek 云端（OpenAI 兼容协议），用 SSE 流式接收，凑齐一句就立刻交给 TTS —— 不等整段回答。",
+    input: "messages（system + 历史 + 本轮 user），max_history = 30 条",
+    output: "{ sentence: str, ttfs_ms: float } 逐句产出",
+    formula: "thinking: { type: \"disabled\" }     # 关掉思维链，否则首句晚几百 ms\nstream: true → 逐 token delta\n切句：遇到 . ! ? … 等终止符即产出一句，每轮上限 3 句\n历史超 30 条时，最旧的成对轮次压成一行摘要塞回 system",
+    subs: [
+      { n: "为什么要流式", note: "不流式就只能等 80 个 token 全部生成完才有第一句，首响直接崩" },
+      { n: "有界队列", note: "maxsize=8 的句子队列做背压：TTS 消费多快，LLM 就生成多快，防止句子在内存里堆积" },
+      { n: "打断时", note: "已生成的部分回复写进 _interrupted_texts，下一轮拼进用户话里，避免“话说到一半被打断”丢失上下文" }
+    ],
+    note: "api_key 为空时构造即抛错（早失败），不会等到第一次对话才在 HTTP 层 401。",
+    code: "engine/llm.py :: stream_sentences()"
+  },
+  {
+    id: "tts", title: "TTS 流式合成", kind: "calc",
+    shapeIn: "sentence: str（一句）",
+    shapeOut: "float32 PCM @24 kHz（逐段）",
+    file: "engine/tts.py",
+    what: "Kokoro-82M 按句合成，每产出一块就立刻下发。音色固定 af_heart，不开放切换。",
+    input: "一句文本（英文）",
+    output: "{ audio: np.float32, chunk_idx, ttfa_ms } 逐块 yield",
+    formula: "G2P（misaki + spaCy en_core_web_sm）→ 音素\n→ 声学模型 + ISTFTNet 声码器 → 波形 24 kHz\n首段做 5 ms 淡入（= 24000×0.005 = 120 点）避免“啪”声",
+    subs: [
+      { n: "为什么按句", note: "Kokoro 按句切段，一段通常 1~3 s；这决定了服务端“停止下发”的粒度" },
+      { n: "权重本地", note: "<code>models/Kokoro-82M</code>：自建 KModel + 把音色 .pt 绝对路径传给 KPipeline，全程不联网" },
+      { n: "预热", note: "启动时先合成一句，把一次性开销挪出首响路径" }
+    ],
+    note: "语速可用 KOKORO_SPEED 调（1.0 = 自然速，0.9 让学员听更清）；采样率 24 kHz 是声码器硬约束。",
+    code: "engine/tts.py :: synthesize_stream()"
+  },
+  {
+    id: "out", title: "下行播放", kind: "out",
+    shapeIn: "float32 PCM 块 + audio_start(turn)",
+    shapeOut: "扬声器 / 打断时清队列",
+    file: "static/js/protocol.js",
+    what: "前端把 int16 帧塞进 AudioWorklet 的抖动缓冲播放。turn 闸门保证只播当前授权轮次的音频。",
+    input: "{\"type\":\"audio_start\",\"turn\":N} 后紧跟的二进制音频帧",
+    output: "扬声器输出；收到 barge_in 时 flushPlayback() 立即清空队列",
+    formula: "playableTurn = audio_start.turn      # 授权轮次\n来帧：if playableTurn !== 0 → 入队播放\nbarge_in：flushPlayback() + playableTurn = 0  # 关闸",
+    subs: [
+      { n: "抖动缓冲", note: "起播水位约 300 ms，抵消网络抖动；代价是首句会晚 300 ms 才出声" },
+      { n: "打断的手感", note: "用户听感约 160 ms（VAD 2 帧确认 + 前端立即清队列）；服务端停止下发的粒度是 1 个 TTS 句段" }
+    ],
+    note: "WebSocket 走 TCP，已下发到浏览器的音频收不回来，所以必须靠前端 flush 才能“立刻闭嘴”。",
+    code: "static/js/audio.js :: enqueuePcmFrame() / flushPlayback()"
+  }
+];
+
+/* ─────────────────────────────────────────────────────────────
+   几何布局：左侧形状 / 中间方块 / 右侧代码位置，自上而下流动
+   ───────────────────────────────────────────────────────────── */
+const GEO = { boxX: 268, boxW: 584, boxH: 68, step: 100, top: 56, leftX: 22, rightX: 872 };
+
+const FILL = {
+  in:    ["var(--in-fill)",    "var(--in-stroke)"],
+  calc:  ["var(--calc-fill)",  "var(--calc-stroke)"],
+  logic: ["var(--logic-fill)", "var(--logic-stroke)"],
+  out:   ["var(--out-fill)",   "var(--out-stroke)"]
+};
+const KIND_LABEL = { in: "输入", calc: "计算", logic: "判定", out: "输出" };
+
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("diagram");
+const $ = (id) => document.getElementById(id);
+
+let currentStep = 0;
+
+function el(tag, attrs, text) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+/* 把长文本按最大字符数折成多行（SVG 没有自动换行） */
+function wrap(text, max) {
+  const out = [];
+  let line = "";
+  for (const ch of text) {
+    if (line.length >= max) { out.push(line); line = ""; }
+    line += ch;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+function buildDiagram() {
+  const totalH = GEO.top + (STAGES.length - 1) * GEO.step + GEO.boxH + 40;
+  svg.setAttribute("viewBox", `0 0 1120 ${totalH}`);
+
+  svg.appendChild(el("text", {
+    x: GEO.leftX, y: 26, class: "band"
+  }, "左侧：数据形状 / 右侧：代码位置"));
+
+  STAGES.forEach((st, i) => {
+    const y = GEO.top + i * GEO.step;
+    const [fill, stroke] = FILL[st.kind];
+
+    /* —— 左侧：输入形状 —— */
+    wrap(st.shapeIn, 15).slice(0, 2).forEach((ln, k) => {
+      svg.appendChild(el("text", { x: GEO.leftX, y: y + 30 + k * 15, class: "side" }, ln));
+    });
+
+    /* —— 中间方块 —— */
+    const g = el("g", { class: "node", "data-idx": i, "data-id": st.id });
+    g.appendChild(el("rect", {
+      x: GEO.boxX, y, width: GEO.boxW, height: GEO.boxH, rx: 6,
+      fill, stroke, "stroke-width": 1.8
+    }));
+    g.appendChild(el("text", { x: GEO.boxX + 18, y: y + 28, class: "t" }, `${i}. ${st.title}`));
+    g.appendChild(el("text", {
+      x: GEO.boxX + 18, y: y + 50, class: "s"
+    }, `${KIND_LABEL[st.kind]} · ${st.shapeOut.length > 46 ? st.shapeOut.slice(0, 45) + "…" : st.shapeOut}`));
+
+    /* 输出形状贴在方块右侧内部 */
+    g.addEventListener("click", () => showDetail(i));
+    svg.appendChild(g);
+
+    /* —— 右侧：代码位置 —— */
+    wrap(st.file, 26).slice(0, 2).forEach((ln, k) => {
+      svg.appendChild(el("text", { x: GEO.rightX, y: y + 30 + k * 15, class: "side" }, ln));
+    });
+
+    /* —— 向下的箭头 —— */
+    if (i < STAGES.length - 1) {
+      const y1 = y + GEO.boxH, y2 = y + GEO.step;
+      const x = GEO.boxX + GEO.boxW / 2;
+      const line = el("line", { x1: x, y1, x2: x, y2: y2 - 7, class: "arrow", "data-arrow": i });
+      const head = el("path", {
+        d: `M${x - 4},${y2 - 8} L${x + 4},${y2 - 8} L${x},${y2} Z`,
+        fill: "#9a9a9a", "data-arrowhead": i
+      });
+      svg.appendChild(line);
+      svg.appendChild(head);
+    }
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────
+   节点详情面板
+   ───────────────────────────────────────────────────────────── */
+function showDetail(i) {
+  const st = STAGES[i];
+  const panel = $("detail");
+  const subs = (st.subs || []).map(s => `<li><b>${s.n}</b> — ${s.note}</li>`).join("");
+
+  panel.innerHTML = `
+    <h2>${i}. ${st.title} <span class="tag">${KIND_LABEL[st.kind]}</span></h2>
+    <dl class="kv">
+      <dt>职责</dt><dd class="txt">${st.what}</dd>
+      <dt>输入</dt><dd>${st.input}</dd>
+      <dt>输出</dt><dd>${st.output}</dd>
+      <dt>关键公式 / 参数</dt>
+      <dd><div class="formula">${st.formula}</div></dd>
+      ${subs ? `<dt>内部拆解</dt><dd class="txt"><ul class="subs">${subs}</ul></dd>` : ""}
+      <dt>注意</dt><dd class="txt">${st.note}</dd>
+      <dt>代码位置</dt><dd>${st.code}</dd>
+    </dl>`;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   步进推演
+   ───────────────────────────────────────────────────────────── */
+function updateStep() {
+  const n = STAGES.length - 1;
+  // 钳制：滑块 max 由 JS 设定，但 HTML 初始值/外部调用仍可能越界
+  currentStep = Math.max(0, Math.min(n, currentStep));
+
+  $("slider").max = n;
+  $("slider").value = currentStep;
+  $("stepno").textContent = `${currentStep} / ${n}`;
+  $("btnPrev").disabled = currentStep === 0;
+  $("btnNext").disabled = currentStep === n;
+
+  /* 方块高亮 */
+  document.querySelectorAll(".node").forEach(g => {
+    g.classList.toggle("active", Number(g.dataset.idx) === currentStep);
+  });
+
+  /* 箭头高亮：指向当前节点的那一段 */
+  document.querySelectorAll("[data-arrow]").forEach(a => {
+    const idx = Number(a.dataset.arrow);
+    a.classList.toggle("arrow-hl", idx === currentStep - 1);
+  });
+  document.querySelectorAll("[data-arrowhead]").forEach(a => {
+    const idx = Number(a.dataset.arrowhead);
+    a.setAttribute("fill", idx === currentStep - 1 ? "var(--hl)" : "#9a9a9a");
+  });
+
+  /* 底部文字说明 */
+  const st = STAGES[currentStep];
+  $("stepTitle").textContent = `第 ${currentStep} 步 · ${st.title}`;
+  $("stepBody").innerHTML =
+    `${st.what}<br><br>` +
+    `<b>输入</b>：${st.input}<br>` +
+    `<b>输出</b>：${st.output}<br>` +
+    `<b>代码</b>：<code>${st.code}</code>`;
+
+  /* 详情面板跟着当前步骤走，减少来回点击 */
+  showDetail(currentStep);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   事件绑定
+   ───────────────────────────────────────────────────────────── */
+$("btnPrev").addEventListener("click", () => {
+  if (currentStep > 0) { currentStep--; updateStep(); }
+});
+$("btnNext").addEventListener("click", () => {
+  if (currentStep < STAGES.length - 1) { currentStep++; updateStep(); }
+});
+$("slider").addEventListener("input", (e) => {
+  currentStep = Number(e.target.value);
+  updateStep();
+});
+$("btnReset").addEventListener("click", () => { currentStep = 0; updateStep(); });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight" && currentStep < STAGES.length - 1) { currentStep++; updateStep(); }
+  if (e.key === "ArrowLeft" && currentStep > 0) { currentStep--; updateStep(); }
+});
+
+/* ═════════════════════════════════════════════════════════════
+   对话状态机：5 个状态 + 迁移
+   与 engine/dialog/*.py 一一对应；引用「文件 :: 函数」而非行号，避免代码变动后失效
+   ═════════════════════════════════════════════════════════════ */
+const SM_STATES = [
+  {
+    id: "IDLE", cn: "空闲", kind: "in",
+    briefly: "等用户开口；每轮播报结束后也回到这里",
+    detail: {
+      meaning: "会话空闲。也是每次播报结束、reset、系统话术播完之后的统一落点。",
+      enter: "会话建立 · 播报结束（streaming / transport 收尾）· reset()",
+      perFrame: "判 <code>prob ≥ 0.6 且 RMS &gt; 0.015</code> 才算用户开口；不满足则每 31 帧（≈1 s）查一次空闲超时。",
+      leave: "<b>→ LISTENING</b>：检出语音　|　<b>→ SPEAKING</b>：主动问候 / 系统话术",
+      note: "空闲超时有两档：IDLE_TIMEOUT_S 先提醒一次，IDLE_GOODBYE_S 仍未开口则告别并结束会话。",
+      code: "engine/dialog/manager.py :: _process_chunk()（IDLE 分支）"
+    }
+  },
+  {
+    id: "LISTENING", cn: "收集中", kind: "calc",
+    briefly: "把用户这一轮的话攒进缓冲",
+    detail: {
+      meaning: "正在收集用户说的这一轮。所有音频帧都进 <code>_audio_buffer</code>，同时数静音帧。",
+      enter: "IDLE 检出语音 · THINKING 觉得上一句太短而回落 · 手动打断",
+      perFrame: "语音帧：追加缓冲、静音计数清零、取消已过期的投机 ASR。<br>静音帧：追加缓冲（ASR 需要句尾静音断句）、静音计数 +1。静音满 5 帧（160 ms）抢跑一次投机 ASR；计数达阈值即判停。",
+      leave: "<b>→ THINKING</b>：判停 / 累积器 3 s 兜底触发　|　<b>→ SPEAKING</b>：系统话术",
+      note: "判停只有两档：本次说话 0.5~3 s → 13 帧（416 ms）；很短或很长 → 20 帧（640 ms）。没有语义判停器。",
+      code: "engine/dialog/manager.py :: _process_chunk()（LISTENING 分支）"
+    }
+  },
+  {
+    id: "THINKING", cn: "思考中", kind: "logic",
+    briefly: "已判停，ASR→RAG→LLM 在跑，等第一句",
+    detail: {
+      meaning: "音频已定稿，整条 ASR → RAG → LLM 链路在后台跑，等 LLM 吐出第一句。这期间可以播一条 filler 盖住空档。",
+      enter: "LISTENING 判停（_on_endpointing）· 累积器超时兜底",
+      perFrame: "**不再判停**。如果又检测到语音，就把帧追加进 <code>_thinking_extra_buffer</code> —— 用于覆盖「用户说到一半被静音误判」的情况。",
+      leave: "<b>→ SPEAKING</b>：首句就绪　|　<b>→ LISTENING</b>：ASR 过短/空结果 / 手动打断　|　<b>→ IDLE</b>：pipeline 异常收尾",
+      note: "首响（600 ms 预算）就是在这个状态下计时的：ASR + RAG + LLM 首句 + TTS 首帧。",
+      code: "engine/dialog/pipeline.py :: _run_pipeline_inner()"
+    }
+  },
+  {
+    id: "SPEAKING", cn: "播报中", kind: "out",
+    briefly: "正在播 AI 的回复，同时监听插话",
+    detail: {
+      meaning: "正在播放 AI 回复。这是唯一会触发 VAD 自动打断的状态。",
+      enter: "首句就绪（TTS 首段合成完）· 系统话术（问候 / 道歉 / 提示）",
+      perFrame: "双门限判打断：<code>prob ≥ 0.6</code> 且 <code>rms &gt; 0.012</code>，连续 2 帧（≈64 ms）确认；确认后置位 <code>_cancel_speaking</code>、把触发帧当作新一轮首帧、下发 <code>barge_in</code>。",
+      leave: "<b>→ INTERRUPTED</b>：VAD 自动打断　|　<b>→ IDLE</b>：播完　|　<b>→ LISTENING</b>：手动打断",
+      note: "收尾时必须判断「是否仍为 SPEAKING」——已被打断转入 INTERRUPTED/LISTENING 时要保留那个状态，否则打断就白做了。",
+      code: "engine/dialog/manager.py :: _process_chunk()（SPEAKING 分支）"
+    }
+  },
+  {
+    id: "INTERRUPTED", cn: "被打断", kind: "itrp",
+    briefly: "用户在 AI 说话时插话，正在收他这句话",
+    detail: {
+      meaning: "用户打断了 AI，正在收集他打断之后说的内容。收完这段再走一次判停。",
+      enter: "SPEAKING 检测到真实语音并连续 2 帧确认",
+      perFrame: "语音帧：追加缓冲、静音计数清零。<br>静音帧：追加缓冲、静音计数 +1，达 10 帧（320 ms）即判停。",
+      leave: "<b>→ THINKING</b>：判停（把这半句交给 pipeline）",
+      note: "打断后的判停阈值（10 帧 / 320 ms）比正常判停（13/20 帧）短：用户打断时更急，且已经过一次 VAD 确认。",
+      code: "engine/dialog/manager.py :: _process_chunk()（INTERRUPTED 分支）"
+    }
+  }
+];
+
+/* 代码里所有改写 state 的位置（引用 文件 :: 函数） */
+const SM_TRANSITIONS = [
+  ["IDLE", "LISTENING", "VAD 概率 ≥ 0.6 且 RMS &gt; 0.015", "manager.py :: _process_chunk()"],
+  ["LISTENING", "THINKING", "连续静音 ≥ 13 帧（416 ms）或 ≥ 20 帧（640 ms）", "endpointing.py :: _on_endpointing()"],
+  ["LISTENING", "THINKING", "ASR 累积器 3 s 兜底定时器触发", "accumulator.py :: _accum_flush_timer()"],
+  ["THINKING", "SPEAKING", "LLM 首句 + TTS 首段就绪", "pipeline.py :: _run_pipeline_inner()"],
+  ["THINKING", "LISTENING", "ASR 文本过短 → 攒进累积器，回到监听", "pipeline.py :: _run_pipeline_inner()"],
+  ["THINKING", "LISTENING", "连续空 ASR / 无有效内容，静默回监听", "pipeline.py :: _run_pipeline_inner()"],
+  ["THINKING", "IDLE", "pipeline 出错/收尾，且状态仍停在 THINKING", "pipeline.py :: _run_pipeline()"],
+  ["SPEAKING", "INTERRUPTED", "双门限 + 连续 2 帧确认（VAD 自动打断）", "manager.py :: _process_chunk()"],
+  ["INTERRUPTED", "THINKING", "连续静音 ≥ 10 帧（320 ms）", "manager.py :: _process_chunk() → _on_endpointing()"],
+  ["SPEAKING", "IDLE", "本轮播报结束", "streaming.py :: _tts_stream_sentence()"],
+  ["SPEAKING", "IDLE", "系统话术播完", "transport.py :: _play_system_tts()"],
+  ["SPEAKING", "LISTENING", "手动打断 manual_barge_in", "manager.py :: handle_barge_in()"],
+  ["THINKING", "LISTENING", "手动打断 manual_barge_in", "manager.py :: handle_barge_in()"],
+  ["（任意）", "SPEAKING", "下发系统话术（问候 / 道歉 / 空闲提醒）", "transport.py :: _speak_system() · session.py :: start_greeting()"],
+  ["（任意）", "IDLE", "reset() / shutdown()", "manager.py :: reset()"]
+];
+
+const SM_COLOR = {
+  in:    ["var(--in-fill)",    "var(--in-stroke)"],
+  calc:  ["var(--calc-fill)",  "var(--calc-stroke)"],
+  logic: ["var(--logic-fill)", "var(--logic-stroke)"],
+  out:   ["var(--out-fill)",   "var(--out-stroke)"],
+  itrp:  ["#fdecea",           "#c0392b"]
+};
+
+const SM_GEO = { x: 455, w: 210, h: 56, top: 40, gap: 110, cx: 560 };
+
+function smY(i) { return SM_GEO.top + i * SM_GEO.gap; }
+
+function buildSM() {
+  const svg = $("smdiagram");
+
+  /* 箭头标记 */
+  const defs = el("defs", {});
+  const mk = el("marker", {
+    id: "sm-ah", viewBox: "0 0 10 10", refX: "9", refY: "5",
+    markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse"
+  });
+  mk.appendChild(el("path", { d: "M0,0 L10,5 L0,10 z", fill: "#9a9a9a" }));
+  defs.appendChild(mk);
+  svg.appendChild(defs);
+
+  /* 状态方块 */
+  SM_STATES.forEach((st, i) => {
+    const y = smY(i);
+    const [fill, stroke] = SM_COLOR[st.kind];
+    const g = el("g", { class: "smnode", "data-sm": st.id });
+    g.appendChild(el("rect", {
+      x: SM_GEO.x, y, width: SM_GEO.w, height: SM_GEO.h, rx: 7,
+      fill, stroke, "stroke-width": 1.8
+    }));
+    g.appendChild(el("text", { x: SM_GEO.x + 16, y: y + 24, class: "t" }, `${st.id}  ·  ${st.cn}`));
+    g.appendChild(el("text", { x: SM_GEO.x + 16, y: y + 43, class: "s" },
+      st.briefly.length > 27 ? st.briefly.slice(0, 26) + "…" : st.briefly));
+    g.addEventListener("click", () => selectSM(st.id));
+    svg.appendChild(g);
+  });
+
+  /* 迁移边：主链路走中间竖线，回路走左右侧通道 */
+  const edges = [
+    /* 主链路（x=500 竖直向下） */
+    { d: "M500,96 L500,143", label: "VAD ≥0.6 且 RMS > 0.015", lx: 514, ly: 124, dashed: false },
+    { d: "M500,206 L500,253", label: "静音 ≥13/20 帧（416/640 ms）", lx: 514, ly: 234, dashed: false },
+    { d: "M500,316 L500,363", label: "首句就绪（LLM 首句 + TTS 首段）", lx: 514, ly: 344, dashed: false },
+    { d: "M500,426 L500,483", label: "prob≥0.6 且 RMS>0.012，连续 2 帧", lx: 514, ly: 458, dashed: false },
+
+    /* 左通道 1：INTERRUPTED → THINKING */
+    { d: "M455,518 L360,518 L360,288 L448,288", label: "静音 ≥320 ms", lx: 352, ly: 398, dashed: false, anchor: "end" },
+    /* 左通道 2：THINKING → LISTENING（ASR 太短） */
+    { d: "M455,275 L400,275 L400,165 L448,165", label: "ASR 过短/空 → 累积", lx: 392, ly: 212, dashed: true, anchor: "end" },
+    /* 左通道 3：SPEAKING → LISTENING（手动打断） */
+    { d: "M455,398 L270,398 L270,180 L448,180", label: "手动打断 manual_barge_in", lx: 262, ly: 290, dashed: true, anchor: "end" },
+
+    /* 右通道：SPEAKING → IDLE（播完） */
+    { d: "M665,398 L800,398 L800,68 L672,68", label: "播完 → IDLE", lx: 812, ly: 236, dashed: false }
+  ];
+
+  edges.forEach(e => {
+    svg.appendChild(el("path", {
+      d: e.d, fill: "none", stroke: "#9a9a9a", "stroke-width": 1.6,
+      "marker-end": "url(#sm-ah)",
+      "stroke-dasharray": e.dashed ? "5 4" : ""
+    }));
+    svg.appendChild(el("text", {
+      x: e.lx, y: e.ly, class: "smlabel",
+      "text-anchor": e.anchor || "start"
+    }, e.label));
+  });
+
+  /* 自环说明（不画成图形，避免拥挤） */
+  svg.appendChild(el("text", {
+    x: SM_GEO.x, y: 578, class: "smnote"
+  }, "自环（状态保持不变）：IDLE 空闲计时 · LISTENING 持续说话 · THINKING 追加语音缓冲 · SPEAKING 继续播放"));
+
+  /* 全量迁移表 */
+  const rows = SM_TRANSITIONS.map(([a, b, why, code]) => `
+    <tr>
+      <td class="f">${a}</td>
+      <td class="f">${b}</td>
+      <td>${why}</td>
+      <td><code>${code}</code></td>
+    </tr>`).join("");
+  $("smtable").innerHTML = `
+    <table class="tbl">
+      <thead><tr><th>从</th><th>到</th><th>触发条件</th><th>代码位置</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function selectSM(id) {
+  const st = SM_STATES.find(x => x.id === id);
+  if (!st) return;
+
+  document.querySelectorAll(".smnode").forEach(g => {
+    g.classList.toggle("sel", g.dataset.sm === id);
+  });
+
+  const [fill, stroke] = SM_COLOR[st.kind];
+  const d = st.detail;
+  $("smdetail").innerHTML = `
+    <h2>
+      <span class="badge" style="background:${fill};border-color:${stroke};color:${stroke}">${st.id}</span>
+      ${st.cn}
+    </h2>
+    <dl class="kv">
+      <dt>含义</dt><dd class="txt">${d.meaning}</dd>
+      <dt>进入条件</dt><dd class="txt">${d.enter}</dd>
+      <dt>每收到一帧做什么</dt><dd class="txt">${d.perFrame}</dd>
+      <dt>离开条件</dt><dd class="txt">${d.leave}</dd>
+      <dt>注意</dt><dd class="txt">${d.note}</dd>
+      <dt>代码位置</dt><dd>${d.code}</dd>
+    </dl>`;
+}
+
+buildDiagram();
+buildSM();
+selectSM("IDLE");
+updateStep();
+
+</script>
+</body>
+</html>
